@@ -1,0 +1,82 @@
+{
+  "display_information": {
+    "name": "Paperclip",
+    "description": "Deterministic Slack control surface for Paperclip companies.",
+    "background_color": "#111827"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Paperclip",
+      "always_online": true
+    },
+    "slash_commands": [
+      {
+        "command": "/paperclip",
+        "description": "Control and query Paperclip from Slack.",
+        "usage_hint": "status | link <issue> | create | approvals | help",
+        "should_escape": false
+      },
+      {
+        "command": "/clip",
+        "description": "Short alias for /paperclip.",
+        "usage_hint": "status | link <issue> | create | approvals | help",
+        "should_escape": false
+      }
+    ]
+  },
+  "oauth_config": {
+    "pkce_enabled": false,
+    "scopes": {
+      "bot": [
+        "assistant:write",
+        "app_mentions:read",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "commands",
+        "chat:write",
+        "chat:write.public",
+        "files:read",
+        "files:write",
+        "users:read",
+        "users:read.email",
+        "reactions:read",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false,
+    "org_deploy_enabled": false,
+    "is_mcp_enabled": false,
+    "interactivity": {
+      "is_enabled": true
+    },
+    "event_subscriptions": {
+      "bot_events": [
+        "assistant_thread_context_changed",
+        "assistant_thread_started",
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim",
+        "file_shared",
+        "reaction_added",
+        "reaction_removed"
+      ]
+    }
+  }
+}

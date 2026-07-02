@@ -1,0 +1,14 @@
+# Updates arrive as PRs through the normal verify gate — SHA pins stay
+# immutable between reviews, security releases still reach us.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # SDK pins are exercised nightly against latest/canary already; Dependabot
+    # covers the rest of the tree (security advisories open PRs immediately).

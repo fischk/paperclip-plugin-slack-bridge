@@ -1,0 +1,27 @@
+# Shared verify gate — the ONLY place the build/test steps are defined.
+# Callers do their own checkout (a local composite can't check itself out).
+name: verify
+description: npm ci + optional SDK dist-tag overlay + full verify gate
+inputs:
+  sdk-channel:
+    description: npm dist-tag to overlay for @paperclipai packages (empty = lockfile pins)
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 24
+        cache: npm
+    - run: npm ci
+      shell: bash
+    - if: inputs.sdk-channel != ''
+      run: npm install --no-save "@paperclipai/plugin-sdk@$CHANNEL" "@paperclipai/shared@$CHANNEL"
+      env:
+        CHANNEL: ${{ inputs.sdk-channel }}
+      shell: bash
+    - if: inputs.sdk-channel != ''
+      run: npm ls @paperclipai/plugin-sdk @paperclipai/shared || true
+      shell: bash
+    - run: npm run verify
+      shell: bash

@@ -1,0 +1,47 @@
+# npm OIDC trusted publishing. One-time setup order (see docs/RELEASING.md):
+# first publish is MANUAL with npm 2FA (trusted publishing cannot be configured
+# for a package that does not exist yet), then register this repo + workflow as
+# the package's trusted publisher (allowed action: publish only) and disallow
+# token-based publishes. Tags v* are protected by ruleset; only the maintainer
+# can create them. prepublishOnly runs the full verify gate.
+name: Publish to npm
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Publish if version is new (fail closed on registry errors)
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          set +e
+          VIEW_OUTPUT=$(npm view "${NAME}@${VERSION}" version 2>&1)
+          VIEW_STATUS=$?
+          set -e
+          if [ $VIEW_STATUS -eq 0 ] && [ -n "$VIEW_OUTPUT" ]; then
+            echo "Version ${VERSION} already published, skipping."
+          elif echo "$VIEW_OUTPUT" | grep -q "E404"; then
+            npm publish --provenance --access public
+          else
+            echo "npm view failed for a non-404 reason; refusing to publish blind:"
+            echo "$VIEW_OUTPUT"
+            exit 1
+          fi
