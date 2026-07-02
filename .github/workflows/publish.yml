@@ -22,6 +22,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: npm-canary
+    # Serialize canaries so concurrent merges can't compute the same N. A burst
+    # of merges may coalesce (GitHub keeps one pending run per group) — fine,
+    # the newest canary contains all merged changes. Stables have their own
+    # group so a pending release can never be evicted by canary traffic.
+    concurrency:
+      group: publish-canary
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -34,18 +41,21 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      - name: Publish canary (date-based, matches Paperclip core convention)
+      - name: Publish canary (<next-patch>-canary.<date>.<run-of-day>)
         run: |
           NAME=$(node -p "require('./package.json').name")
-          # YYYY.MDD (UTC month unpadded, day zero-padded), e.g. 2026.702 for Jul 2
-          BASE_DATE="$(date -u +%Y).$(date -u +%-m)$(date -u +%d)"
+          LATEST=$(npm view "$NAME" dist-tags.latest 2>/dev/null)
+          if [ -z "$LATEST" ]; then
+            echo "could not resolve dist-tag latest; refusing to compute canary base blind"
+            exit 1
+          fi
+          IFS=. read -r MA MI PA <<< "$LATEST"
+          NEXT="$MA.$MI.$((PA+1))"
+          DATE="$(date -u +%Y%m%d)"
           VERSIONS=$(npm view "$NAME" versions --json 2>/dev/null | jq 'if type=="array" then . else [.] end' || echo '[]')
-          # P = stables already published today (canary previews the NEXT patch slot)
-          P=$(echo "$VERSIONS" | jq --arg b "$BASE_DATE." '[ .[] | select(startswith($b)) | select(contains("-") | not) ] | length')
-          BASE="$BASE_DATE.$P"
-          N=$(echo "$VERSIONS" | jq --arg b "$BASE-canary." '[ .[] | select(startswith($b)) ] | length')
-          CANARY="$BASE-canary.$N"
-          echo "publishing $CANARY"
+          N=$(echo "$VERSIONS" | jq --arg b "$NEXT-canary.$DATE." '[ .[] | select(startswith($b)) ] | length')
+          CANARY="$NEXT-canary.$DATE.$N"
+          echo "publishing $CANARY (base: latest=$LATEST)"
           npm version "$CANARY" --no-git-tag-version
           npm publish --provenance --access public --tag canary
 
@@ -53,6 +63,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: npm-stable
+    concurrency:
+      group: publish-stable
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -65,6 +78,14 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm ci
+      - name: Assert release tag matches package version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
+            exit 1
+          fi
       - name: Publish stable (fail closed on registry errors)
         run: |
           VERSION=$(node -p "require('./package.json').version")

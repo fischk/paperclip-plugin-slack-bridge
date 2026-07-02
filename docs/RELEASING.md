@@ -12,6 +12,8 @@ flowchart TD
     end
 
     subgraph rel [Release — maintainer only]
+        C -->|every merge| CY["publish.yml canary job<br/>next-patch-canary.date.N · env npm-canary"]
+        CY --> NC[("npm dist-tag canary")]
         C --> D[version bump + CHANGELOG via PR]
         D --> E[live Slack smoke test]
         E --> F[git tag v0.x.y<br/>tag ruleset: admin-only]
@@ -40,18 +42,20 @@ their own PRs).
 
 ## Releasing a version
 
-1. On a branch, set `package.json` to today's date version, e.g.
-   `2026.702.0` (`src/constants.ts` derives `PLUGIN_VERSION` from it at build
-   time) and add a `CHANGELOG.md` section.
+1. On a branch, bump the semver version in `package.json`
+   (`src/constants.ts` derives `PLUGIN_VERSION` from it at build time) and add
+   a `CHANGELOG.md` section.
 2. Run `npm run verify` locally, then the live smoke test below.
 3. Open a PR to `main`; merge when `verify` is green.
-Versions are date-based, matching Paperclip core's convention:
-stable = `YYYY.MDD.P` (UTC month+day, same-day patch slot), canary =
-`YYYY.MDD.P-canary.N`. Every merge to `main` automatically publishes a canary
-under the `canary` dist-tag — install with
-`paperclip-plugin-slack-bridge@canary`. (Unlike core, canaries get no git
-tags: the publish workflow deliberately cannot write to the repo.) Stable
-releases are tag-driven:
+Stable versions are semver (`0.2.0`, `0.3.0`, …). Canaries are date-stamped
+prereleases of the next patch: `<next-patch>-canary.<YYYYMMDD>.<N>` (e.g.
+`0.1.1-canary.20260702.0`, N = run of the day) — ordered after the current
+stable, before the next one, and invisible to version ranges. Every merge to
+`main` triggers a canary publish under the `canary` dist-tag (rapid merges may
+coalesce into the newest run, which contains all merged changes) — install
+with `paperclip-plugin-slack-bridge@canary`. Canaries get no git tags: the
+publish workflow deliberately cannot write to the repo. Stable releases are
+tag-driven:
 
 4. Tag and push: `git tag v<version> && git push origin v<version>`.
    Only the repo admin can create `v*` tags. The tag triggers `publish.yml`,
@@ -118,5 +122,5 @@ tag. After step 6 the only publish paths are a protected `v*` tag or a
    GitHub Actions, this repo, workflow `publish.yml`, allowed action
    **publish** only.
 6. **Disallow token publishes** (package Settings → Publishing access).
-7. **Verify the loop** — push the next patch tag and watch `publish.yml`
+7. **Verify the loop** — push the next stable semver tag and watch `publish.yml`
    publish via OIDC with provenance.

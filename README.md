@@ -39,7 +39,7 @@ You need three things: a Slack app (5 minutes, no coding), the plugin installed 
 
 ### 2. Install the plugin in Paperclip
 
-From the Paperclip UI: **Settings → Plugins → Install** and enter `paperclip-plugin-slack-bridge`. (Pre-release builds from every merge are available as `paperclip-plugin-slack-bridge@canary`.)
+From the Paperclip UI: **Settings → Plugins → Install** and enter `paperclip-plugin-slack-bridge`. (Pre-release builds from every merge are on the `canary` dist-tag — install them via the API by adding `"version": "canary"` to the request below; the UI install field takes a package name only.)
 
 Or via the API:
 
