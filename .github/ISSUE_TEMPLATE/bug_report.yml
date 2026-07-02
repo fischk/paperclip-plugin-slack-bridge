@@ -1,0 +1,56 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **⚠️ Redact before pasting.** Logs and config from this plugin can contain
+        > **Slack tokens (`xoxb-…`, `xapp-…`), Slack channel/user IDs, Paperclip API
+        > tokens, company names, and issue content.** Replace tokens with `xoxb-REDACTED`,
+        > channel IDs with `C0000000000`, and remove anything you wouldn't post publicly.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues (including closed and `compat`-labeled ones)
+          required: true
+        - label: I checked [COMPATIBILITY.md](https://github.com/fischk/paperclip-plugin-slack-bridge/blob/main/docs/COMPATIBILITY.md) and the nightly badge — this isn't a known core drift
+          required: true
+        - label: I redacted tokens, IDs, and private content from everything below
+          required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.0 (or a canary version)"
+    validations:
+      required: true
+  - type: input
+    id: core-version
+    attributes:
+      label: Paperclip core version
+      description: From `GET /api/health` or the Paperclip UI
+      placeholder: "2026.626.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the exact Slack card text or command output if there was one — error cards name the failure class on purpose.
+    validations:
+      required: true
+  - type: textarea
+    id: health
+    attributes:
+      label: Plugin health output
+      description: "From the Paperclip plugin page or `npx paperclipai plugin health paperclip-plugin-slack-bridge`. The `message`, `lastPollFailureSource`, and `lastPollErrorKind` fields matter most."
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or metrics (redacted)
+      description: "`slack_host_call_failed` metric rows with their `error_kind` tags are the fastest path to a diagnosis."
+      render: text

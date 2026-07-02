@@ -25,3 +25,10 @@ runs:
       shell: bash
     - run: npm run verify
       shell: bash
+    - name: Packaging dry-run (tarball must carry the plugin entrypoints)
+      run: |
+        PACKED=$(npm pack --dry-run 2>&1)
+        echo "$PACKED"
+        echo "$PACKED" | grep -q "dist/manifest.js" || { echo "dist/manifest.js missing from tarball"; exit 1; }
+        echo "$PACKED" | grep -q "dist/worker.js" || { echo "dist/worker.js missing from tarball"; exit 1; }
+      shell: bash

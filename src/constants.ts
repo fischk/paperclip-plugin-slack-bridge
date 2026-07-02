@@ -1,5 +1,8 @@
+import pkg from "../package.json" with { type: "json" };
+
 export const PLUGIN_ID = "paperclip-plugin-slack-bridge";
-export const PLUGIN_VERSION = "0.1.0";
+// Single source of truth: npm version (canary or stable) is the only bump needed.
+export const PLUGIN_VERSION: string = pkg.version;
 export const HUMAN_INPUT_EVENT_TYPE = `plugin.${PLUGIN_ID}.human_input_needed` as const;
 
 export const ACTION_IDS = {
