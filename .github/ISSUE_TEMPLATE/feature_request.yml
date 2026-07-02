@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose new functionality for the plugin
+labels: [enhancement]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I checked the [roadmap](https://github.com/fischk/paperclip-plugin-slack-bridge/blob/main/docs/ROADMAP.md) — this isn't already planned
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation in Slack/Paperclip where you hit the gap.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

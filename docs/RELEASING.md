@@ -40,11 +40,19 @@ their own PRs).
 
 ## Releasing a version
 
-1. On a branch, bump the version in **both** `package.json` and
-   `src/constants.ts` (`PLUGIN_VERSION`) — a unit test and the contract check
-   fail if they diverge — and add a `CHANGELOG.md` section.
+1. On a branch, set `package.json` to today's date version, e.g.
+   `2026.702.0` (`src/constants.ts` derives `PLUGIN_VERSION` from it at build
+   time) and add a `CHANGELOG.md` section.
 2. Run `npm run verify` locally, then the live smoke test below.
 3. Open a PR to `main`; merge when `verify` is green.
+Versions are date-based, matching Paperclip core's convention:
+stable = `YYYY.MDD.P` (UTC month+day, same-day patch slot), canary =
+`YYYY.MDD.P-canary.N`. Every merge to `main` automatically publishes a canary
+under the `canary` dist-tag — install with
+`paperclip-plugin-slack-bridge@canary`. (Unlike core, canaries get no git
+tags: the publish workflow deliberately cannot write to the repo.) Stable
+releases are tag-driven:
+
 4. Tag and push: `git tag v<version> && git push origin v<version>`.
    Only the repo admin can create `v*` tags. The tag triggers `publish.yml`,
    which publishes to npm via OIDC trusted publishing with provenance — it

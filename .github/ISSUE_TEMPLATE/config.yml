@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Known Paperclip core incompatibilities
+    url: https://github.com/fischk/paperclip-plugin-slack-bridge/blob/main/docs/COMPATIBILITY.md
+    about: Check whether the nightly compat job already knows about your break before filing
+  - name: Roadmap
+    url: https://github.com/fischk/paperclip-plugin-slack-bridge/blob/main/docs/ROADMAP.md
+    about: Check the roadmap before requesting a feature
+  - name: Security vulnerabilities
+    url: https://github.com/fischk/paperclip-plugin-slack-bridge/security/advisories/new
+    about: Report vulnerabilities privately — never in a public issue

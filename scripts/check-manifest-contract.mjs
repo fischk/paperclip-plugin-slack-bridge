@@ -40,7 +40,7 @@ if (manifest.apiVersion !== PLUGIN_API_VERSION) {
 }
 
 if (manifest.version !== pkg.version) {
-  fail(`manifest version ${manifest.version} !== package.json version ${pkg.version} — bump src/constants.ts PLUGIN_VERSION`);
+  fail(`manifest version ${manifest.version} !== package.json version ${pkg.version} — stale dist/? PLUGIN_VERSION derives from package.json at build time — run npm run build`);
 }
 
 if (!pkg.name.startsWith("paperclip-plugin-")) {
