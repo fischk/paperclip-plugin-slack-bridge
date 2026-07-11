@@ -278,9 +278,15 @@ describe("Block Kit renderers", () => {
       },
     }, config);
     const json = JSON.stringify(message);
-    expect(json).toContain("more options than Slack can show inline");
+    expect(json).toContain("PRO-1 _This confirmation has more options than Slack can show inline");
     expect(json).toContain("Open the issue to choose them");
     expect(json).toContain("http://127.0.0.1:3100/issues/issue-1");
+    expect(message.blocks).toHaveLength(1);
+    expect(json).not.toContain("Confirm many checkbox options");
+    expect(json).not.toContain("Which checks may the agent proceed with?");
+    expect(json).not.toContain("Select 1–40 options");
+    expect(json).not.toContain("Issue");
+    expect(json).not.toContain("Status");
     expect(json).not.toContain(ACTION_IDS.interactionRejectStart);
     expect(json).not.toContain(ACTION_IDS.interactionReject);
     expect(json).not.toContain(ACTION_IDS.interactionAccept);

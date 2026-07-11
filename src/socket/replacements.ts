@@ -32,6 +32,11 @@ export function replaceOriginalResponse(message: SlackMessage): SlackActionRespo
   return { message, replaceOriginal: true, responseType: "in_channel" };
 }
 
+function oversizedCheckboxConfirmationMessage(identifier: string, issueUrl: string): SlackMessage {
+  const text = `${identifier} _This confirmation has more options than Slack can show inline. <${issueUrl}|Open the issue to choose them.>_`;
+  return { text: `${identifier}: open in Paperclip`, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+}
+
 function interactionActionValue(interaction: InteractionActionValue, options: { includeCheckboxDefaults?: boolean } = {}): string {
   const includeCheckboxDefaults = options.includeCheckboxDefaults !== false;
   return JSON.stringify({
@@ -98,6 +103,7 @@ export function interactionCheckboxConfirmationPendingMessage(
   const options = allOptions.slice(0, 10);
 
   const title = stringField(record?.title) ?? fallback.title ?? fallback.identifier ?? "Checkbox confirmation requested";
+  if (!supportsInlineAccept) return oversizedCheckboxConfirmationMessage(fallback.identifier ?? fallback.issueId ?? title, issueUrl);
   const prompt = stringField(payload?.prompt) ?? fallback.prompt ?? "Review the confirmation in Paperclip.";
   const summary = stringField(record?.summary) ?? fallback.summary;
   const detailsMarkdown = stringField(payload?.detailsMarkdown) ?? fallback.detailsMarkdown;

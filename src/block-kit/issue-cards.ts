@@ -11,9 +11,10 @@ export function renderIssueCard(notification: NormalizedNotification, baseUrl: s
   const enrichedCheckboxConfirmation = isEnrichedCheckboxConfirmationNotification(notification);
   const enrichedSuggestedTasks = isEnrichedSuggestedTasksNotification(notification);
   const enrichedInteraction = enrichedQuestion || enrichedConfirmation || enrichedCheckboxConfirmation || enrichedSuggestedTasks;
+  const oversizedCheckboxConfirmation = enrichedCheckboxConfirmation && (notification.interactionCheckboxConfirmation?.options.length ?? 0) > 10;
+  if (oversizedCheckboxConfirmation) return oversizedCheckboxConfirmationMessage(notification.identifier ?? issueId, url);
   const heading = issueHeading(notification);
   const body = !enrichedInteraction && notification.description ? `\n>${truncateText(notification.description, 900)}` : "";
-  const oversizedCheckboxConfirmation = enrichedCheckboxConfirmation && (notification.interactionCheckboxConfirmation?.options.length ?? 0) > 10;
   const interactionBlocks = enrichedSuggestedTasks
     ? renderInteractionSuggestedTasks(notification)
     : enrichedCheckboxConfirmation
@@ -47,6 +48,13 @@ export function renderIssueCard(notification: NormalizedNotification, baseUrl: s
     contextFooter(notification),
   ];
   const message = { text: `${plainKind(notification)}: ${title}`, blocks };
+  assertSlackMessageBounds(message);
+  return message;
+}
+
+function oversizedCheckboxConfirmationMessage(identifier: string, issueUrl: string): SlackMessage {
+  const text = `${identifier} _This confirmation has more options than Slack can show inline. <${issueUrl}|Open the issue to choose them.>_`;
+  const message = { text: `${identifier}: open in Paperclip`, blocks: [section(text)] };
   assertSlackMessageBounds(message);
   return message;
 }

@@ -643,9 +643,13 @@ describe("Slack Socket Mode ingress", () => {
     } as any, { ...config, paperclipBaseUrl: "http://127.0.0.1:3100" });
     const initialRendered = JSON.stringify(initialCard);
     const initialActionIds = collectButtons(initialCard).map((button) => button.action_id);
-    expect(initialRendered).toContain("more options than Slack can show inline");
+    expect(initialRendered).toContain("COM-1 _This confirmation has more options than Slack can show inline");
     expect(initialRendered).toContain("Open the issue to choose them");
     expect(initialRendered).toContain("http://127.0.0.1:3100/issues/issue-1");
+    expect(initialRendered).not.toContain("Confirm many checks");
+    expect(initialRendered).not.toContain("Which checks may the agent proceed with?");
+    expect(initialRendered).not.toContain("Select 1–12 options");
+    expect(initialCard.blocks).toHaveLength(1);
     expect(initialActionIds).toEqual([]);
 
     const legacyValue = JSON.stringify({
@@ -670,9 +674,13 @@ describe("Slack Socket Mode ingress", () => {
     const renderedMessage = call?.[2];
     const rendered = JSON.stringify(renderedMessage);
     const actionIds = collectButtons(renderedMessage).map((button) => button.action_id);
-    expect(rendered).toContain("more options than Slack can show inline");
+    expect(rendered).toContain("issue-1 _This confirmation has more options than Slack can show inline");
     expect(rendered).toContain("Open the issue to choose them");
     expect(rendered).toContain("http://127.0.0.1:3100/COM/issues/issue-1");
+    expect(rendered).not.toContain("Confirm many checks");
+    expect(rendered).not.toContain("Which checks may the agent proceed with?");
+    expect(rendered).not.toContain("Select 1–12 options");
+    expect((renderedMessage as any).blocks).toHaveLength(1);
     expect(actionIds).toEqual([]);
   });
 
