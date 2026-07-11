@@ -32,11 +32,37 @@ export function replaceOriginalResponse(message: SlackMessage): SlackActionRespo
   return { message, replaceOriginal: true, responseType: "in_channel" };
 }
 
+function interactionActionValue(interaction: InteractionActionValue, options: { includeCheckboxDefaults?: boolean } = {}): string {
+  const includeCheckboxDefaults = options.includeCheckboxDefaults !== false;
+  return JSON.stringify({
+    issueId: interaction.issueId,
+    interactionId: interaction.interactionId,
+    companyPrefix: interaction.companyPrefix,
+    kind: interaction.kind,
+    optionActionId: interaction.optionActionId,
+    rejectRequiresReason: interaction.rejectRequiresReason === true,
+    title: interaction.title ? truncateSlackText(interaction.title, 180) : undefined,
+    identifier: interaction.identifier ? truncateSlackText(interaction.identifier, 80) : undefined,
+    prompt: interaction.prompt ? truncateSlackText(interaction.prompt, 360) : undefined,
+    summary: interaction.summary ? truncateSlackText(interaction.summary, 160) : undefined,
+    detailsMarkdown: interaction.detailsMarkdown ? truncateSlackText(interaction.detailsMarkdown, 320) : undefined,
+    acceptLabel: interaction.acceptLabel ? truncateSlackText(interaction.acceptLabel, 75) : undefined,
+    rejectLabel: interaction.rejectLabel ? truncateSlackText(interaction.rejectLabel, 75) : undefined,
+    minSelected: interaction.minSelected,
+    maxSelected: interaction.maxSelected,
+    taskClientKeys: interaction.taskClientKeys,
+    taskParentClientKeys: interaction.taskParentClientKeys,
+    ...(includeCheckboxDefaults && interaction.defaultSelectedOptionIds ? {
+      defaultSelectedOptionIds: interaction.defaultSelectedOptionIds.slice(0, 10).map((id) => truncateSlackText(id, 120)),
+    } : {}),
+  });
+}
+
 export function interactionConfirmationPendingMessage(interaction: InteractionActionValue, issueUrl: string): SlackMessage {
   const title = interaction.title ?? interaction.identifier ?? "Confirmation requested";
   const prompt = interaction.prompt ?? "Review the confirmation in Paperclip.";
   const details = confirmationDetails(interaction);
-  const value = JSON.stringify(interaction);
+  const value = interactionActionValue(interaction);
   return {
     text: `${title}: confirmation requested`,
     blocks: [
@@ -63,12 +89,13 @@ export function interactionCheckboxConfirmationPendingMessage(
   issueUrl: string,
 ): SlackMessage {
   const payload = recordField(record?.payload);
-  const options = arrayField(payload?.options)
+  const allOptions = arrayField(payload?.options)
     .map((item) => recordField(item))
     .map((item) => ({ id: stringField(item?.id), label: stringField(item?.label) }))
-    .filter((item): item is { id: string; label: string } => Boolean(item.id && item.label))
-    .slice(0, 10);
-  if (options.length === 0) return interactionConfirmationPendingMessage(fallback, issueUrl);
+    .filter((item): item is { id: string; label: string } => Boolean(item.id && item.label));
+  if (allOptions.length === 0) return interactionConfirmationPendingMessage(fallback, issueUrl);
+  const supportsInlineAccept = allOptions.length <= 10;
+  const options = allOptions.slice(0, 10);
 
   const title = stringField(record?.title) ?? fallback.title ?? fallback.identifier ?? "Checkbox confirmation requested";
   const prompt = stringField(payload?.prompt) ?? fallback.prompt ?? "Review the confirmation in Paperclip.";
@@ -95,26 +122,30 @@ export function interactionCheckboxConfirmationPendingMessage(
     maxSelected,
     taskClientKeys: [],
     taskParentClientKeys: {},
-    defaultSelectedOptionIds,
+    defaultSelectedOptionIds: supportsInlineAccept ? defaultSelectedOptionIds : [],
   };
-  const value = JSON.stringify(actionValue);
+  const value = interactionActionValue(actionValue, { includeCheckboxDefaults: supportsInlineAccept });
   const details = confirmationDetails(actionValue);
+  const bodyBlocks: SlackBlock[] = [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `*${title}*\n*Checkbox confirmation requested*\n${prompt}${details}\n_${checkboxBoundsLabel(minSelected, maxSelected)}_` },
+    },
+    ...(supportsInlineAccept
+      ? [checkboxInputBlock(options, defaultSelectedOptionIds, minSelected === 0)]
+      : [{ type: "section" as const, text: { type: "mrkdwn" as const, text: `_This confirmation has more options than Slack can show inline. <${issueUrl}|Open the issue to choose them.>_` } }]),
+  ];
   return {
     text: `${title}: checkbox confirmation requested`,
     blocks: [
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: `*${title}*\n*Checkbox confirmation requested*\n${prompt}${details}\n_${checkboxBoundsLabel(minSelected, maxSelected)}_` },
-      },
-      checkboxInputBlock(options, defaultSelectedOptionIds, minSelected === 0),
-      {
-        type: "actions",
+      ...bodyBlocks,
+      ...(supportsInlineAccept ? [{
+        type: "actions" as const,
         elements: [
           slackButton(actionValue.acceptLabel ?? "Accept", ACTION_IDS.interactionAccept, value, "primary"),
           slackButton(actionValue.rejectLabel ?? "Reject", ACTION_IDS.interactionRejectStart, value, "danger"),
         ],
-      },
-      openIssueActions(issueUrl),
+      }, openIssueActions(issueUrl)] : []),
       { type: "context", elements: [{ type: "mrkdwn", text: "Paperclip • human.input_needed • pending" }] },
     ],
   };
@@ -124,7 +155,7 @@ export function interactionConfirmationDeclineMessage(interaction: InteractionAc
   const title = interaction.title ?? interaction.identifier ?? "Confirmation requested";
   const prompt = interaction.prompt ?? "Review the confirmation in Paperclip.";
   const details = confirmationDetails(interaction);
-  const value = JSON.stringify(interaction);
+  const value = interactionActionValue(interaction);
   return {
     text: `${title}: decline notes needed`,
     blocks: [

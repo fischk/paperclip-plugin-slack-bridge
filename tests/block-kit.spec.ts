@@ -256,6 +256,39 @@ describe("Block Kit renderers", () => {
     expect(json).not.toContain("Decline notes");
   });
 
+  it("renders large checkbox confirmations as a simple open-in-Paperclip notice", () => {
+    const options = Array.from({ length: 40 }, (_, index) => ({
+      id: `option-${index + 1}-${"long-id-segment-".repeat(4)}`,
+      label: `Long checkbox option ${index + 1}`,
+    }));
+    const message = renderNotification({
+      ...notification("human.input_needed"),
+      interactionId: "interaction-check-many",
+      interactionKind: "request_checkbox_confirmation",
+      interactionTitle: "Confirm many checkbox options",
+      interactionCheckboxConfirmation: {
+        prompt: "Which checks may the agent proceed with?",
+        acceptLabel: "Proceed with many selected",
+        rejectLabel: "Return many with notes",
+        rejectRequiresReason: true,
+        minSelected: 1,
+        maxSelected: 40,
+        defaultSelectedOptionIds: options.map((option) => option.id),
+        options,
+      },
+    }, config);
+    const json = JSON.stringify(message);
+    expect(json).toContain("more options than Slack can show inline");
+    expect(json).toContain("Open the issue to choose them");
+    expect(json).toContain("http://127.0.0.1:3100/issues/issue-1");
+    expect(json).not.toContain(ACTION_IDS.interactionRejectStart);
+    expect(json).not.toContain(ACTION_IDS.interactionReject);
+    expect(json).not.toContain(ACTION_IDS.interactionAccept);
+    expect(json).not.toContain(ACTION_IDS.interactionCheckboxSelect);
+    expect(json).not.toContain(ACTION_IDS.issueOpen);
+    expect(collectButtonValues(message)).toHaveLength(0);
+  });
+
   it("renders suggest-tasks interactions as Slack task-selection controls", () => {
     const message = renderNotification({
       ...notification("human.input_needed"),

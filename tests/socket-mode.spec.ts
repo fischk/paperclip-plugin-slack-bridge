@@ -389,7 +389,11 @@ describe("Slack Socket Mode ingress", () => {
       },
     });
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1/interactions",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
     let call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
     expect(call?.[3]).toEqual(expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }));
     let rendered = JSON.stringify(call?.[2]);
@@ -412,7 +416,11 @@ describe("Slack Socket Mode ingress", () => {
       },
     });
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1/interactions",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
     expect(slackApiMock.respondToInteraction).toHaveBeenCalledTimes(2);
     call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
     rendered = JSON.stringify(call?.[2]);
@@ -574,6 +582,98 @@ describe("Slack Socket Mode ingress", () => {
     expect(rendered).toContain("↩️ Sent back");
     expect(rendered).toContain("View in Paperclip");
     expect(rendered).not.toContain("Use a safer subset.");
+  });
+
+  it("renders and restores large checkbox confirmations as simple Paperclip-only notices", async () => {
+    const options = Array.from({ length: 12 }, (_, index) => ({ id: `opt-${index + 1}`, label: `Option ${index + 1}` }));
+    const checkboxRecord = {
+      id: "interaction-check-many",
+      issueId: "issue-1",
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      title: "Confirm many checks",
+      summary: "Pick many checks.",
+      payload: {
+        version: 1,
+        prompt: "Which checks may the agent proceed with?",
+        options,
+        defaultSelectedOptionIds: options.map((option) => option.id),
+        minSelected: 1,
+        maxSelected: 12,
+        acceptLabel: "Proceed with selected",
+        rejectLabel: "Return with notes",
+        rejectRequiresReason: true,
+      },
+      result: null,
+    };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/issues/issue-1/interactions") && !init?.method) {
+        return new Response(JSON.stringify([checkboxRecord]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const { startSlackSocketMode } = await import("../src/socket-mode.js");
+    const { renderNotification } = await import("../src/block-kit/index.js");
+    const ctx = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      http: { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) },
+      metrics: { write: vi.fn(async () => undefined) },
+      companies: { list: vi.fn(async () => []) },
+      issues: { list: vi.fn(async () => []) },
+    } as any;
+
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
+    const client = socketMock.instances[0];
+    const initialCard = renderNotification({
+      kind: "human.input_needed",
+      eventId: "evt-checkbox-many",
+      eventType: "human.input_needed",
+      occurredAt: "2026-06-27T00:00:00.000Z",
+      companyId: "company-1",
+      companyPrefix: "COM",
+      issueId: "issue-1",
+      identifier: "COM-1",
+      title: "Human input needed for many checks",
+      interactionId: "interaction-check-many",
+      interactionKind: "request_checkbox_confirmation",
+      interactionTitle: "Confirm many checks",
+      interactionCheckboxConfirmation: checkboxRecord.payload,
+      raw: {},
+    } as any, { ...config, paperclipBaseUrl: "http://127.0.0.1:3100" });
+    const initialRendered = JSON.stringify(initialCard);
+    const initialActionIds = collectButtons(initialCard).map((button) => button.action_id);
+    expect(initialRendered).toContain("more options than Slack can show inline");
+    expect(initialRendered).toContain("Open the issue to choose them");
+    expect(initialRendered).toContain("http://127.0.0.1:3100/issues/issue-1");
+    expect(initialActionIds).toEqual([]);
+
+    const legacyValue = JSON.stringify({
+      issueId: "issue-1",
+      interactionId: "interaction-check-many",
+      companyPrefix: "COM",
+      kind: "request_checkbox_confirmation",
+      rejectRequiresReason: true,
+      optionActionId: ACTION_IDS.interactionCheckboxSelect,
+    });
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        actions: [{ action_id: ACTION_IDS.interactionRejectCancel, action_ts: "602.002", value: legacyValue }],
+      },
+    });
+
+    const call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    const renderedMessage = call?.[2];
+    const rendered = JSON.stringify(renderedMessage);
+    const actionIds = collectButtons(renderedMessage).map((button) => button.action_id);
+    expect(rendered).toContain("more options than Slack can show inline");
+    expect(rendered).toContain("Open the issue to choose them");
+    expect(rendered).toContain("http://127.0.0.1:3100/COM/issues/issue-1");
+    expect(actionIds).toEqual([]);
   });
 
   it("asks for decline notes before final rejection when the two-stage form is blank", async () => {
@@ -958,6 +1058,59 @@ describe("Slack Socket Mode ingress", () => {
       expect.objectContaining({ text: "✅ Approved: Confirm deployment plan" }),
       expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }),
     );
+  });
+
+  it("checks stale state before opening the send-back notes form", async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/issues/issue-1/interactions")) {
+        return new Response(JSON.stringify([{
+          id: "interaction-confirm-1",
+          issueId: "issue-1",
+          kind: "request_confirmation",
+          status: "accepted",
+          title: "Confirm deployment plan",
+          result: { version: 1, outcome: "accepted" },
+        }]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const { startSlackSocketMode } = await import("../src/socket-mode.js");
+    const ctx = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      http: { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) },
+      metrics: { write: vi.fn(async () => undefined) },
+      companies: { list: vi.fn(async () => []) },
+      issues: { list: vi.fn(async () => []) },
+    } as any;
+
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
+    const client = socketMock.instances[0];
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        actions: [{
+          action_id: ACTION_IDS.interactionRejectStart,
+          action_ts: "624.001",
+          value: JSON.stringify({ issueId: "issue-1", interactionId: "interaction-confirm-1", companyPrefix: "COM", kind: "request_confirmation", rejectRequiresReason: true }),
+        }],
+      },
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1/interactions",
+      expect.objectContaining({ headers: expect.any(Object) }),
+    );
+    const call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    const rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("✅ Approved");
+    expect(rendered).toContain("Confirm deployment plan");
+    expect(rendered).not.toContain("Decline notes");
+    expect(rendered).not.toContain(ACTION_IDS.interactionReject);
   });
 
   it("keeps Open in Paperclip URL button interactions quiet", async () => {

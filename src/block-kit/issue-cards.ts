@@ -13,16 +13,17 @@ export function renderIssueCard(notification: NormalizedNotification, baseUrl: s
   const enrichedInteraction = enrichedQuestion || enrichedConfirmation || enrichedCheckboxConfirmation || enrichedSuggestedTasks;
   const heading = issueHeading(notification);
   const body = !enrichedInteraction && notification.description ? `\n>${truncateText(notification.description, 900)}` : "";
+  const oversizedCheckboxConfirmation = enrichedCheckboxConfirmation && (notification.interactionCheckboxConfirmation?.options.length ?? 0) > 10;
   const interactionBlocks = enrichedSuggestedTasks
     ? renderInteractionSuggestedTasks(notification)
     : enrichedCheckboxConfirmation
-    ? renderInteractionCheckboxConfirmation(notification)
+    ? renderInteractionCheckboxConfirmation(notification, url)
     : enrichedConfirmation
       ? renderInteractionConfirmation(notification)
       : renderInteractionQuestions(notification);
   const answerButtons = enrichedSuggestedTasks
     ? renderSuggestedTaskButtons(notification)
-    : enrichedConfirmation || enrichedCheckboxConfirmation ? renderConfirmationButtons(notification) : renderAnswerButtons(notification);
+    : (enrichedConfirmation || enrichedCheckboxConfirmation) && !oversizedCheckboxConfirmation ? renderConfirmationButtons(notification) : renderAnswerButtons(notification);
   const fields = fieldsBlock([
     ["Issue", notification.identifier ?? issueId],
     ["Status", notification.status],
@@ -42,7 +43,7 @@ export function renderIssueCard(notification: NormalizedNotification, baseUrl: s
     ...interactionBlocks,
     ...(fields ? [fields] : []),
     ...(answerButtons.length > 0 ? [actionBlock(answerButtons)] : []),
-    actionBlock([linkButton("Open Issue", url, ACTION_IDS.issueOpen)]),
+    ...(oversizedCheckboxConfirmation ? [] : [actionBlock([linkButton("Open Issue", url, ACTION_IDS.issueOpen)])]),
     contextFooter(notification),
   ];
   const message = { text: `${plainKind(notification)}: ${title}`, blocks };
@@ -59,7 +60,7 @@ function renderInteractionConfirmation(notification: NormalizedNotification) {
   return [section(`${title}*Confirmation requested*\n${truncateText(confirmation.prompt, 900)}${summary}${details}`)];
 }
 
-function renderInteractionCheckboxConfirmation(notification: NormalizedNotification) {
+function renderInteractionCheckboxConfirmation(notification: NormalizedNotification, issueUrl: string) {
   const confirmation = notification.interactionCheckboxConfirmation;
   if (notification.kind !== "human.input_needed" || notification.interactionKind !== "request_checkbox_confirmation" || !confirmation) return [];
   const title = notification.interactionTitle ? `*${truncateText(notification.interactionTitle, 220)}*\n` : "";
@@ -82,7 +83,7 @@ function renderInteractionCheckboxConfirmation(notification: NormalizedNotificat
       min === 0,
     ));
   } else {
-    blocks.push(section("_This confirmation has more options than Slack can show inline. Open the issue to choose them._"));
+    blocks.push(section(`_This confirmation has more options than Slack can show inline. <${issueUrl}|Open the issue to choose them.>_`));
   }
   return blocks;
 }
@@ -199,7 +200,7 @@ function renderConfirmationButtons(notification: NormalizedNotification): Array<
   if (notification.interactionKind !== "request_confirmation" && notification.interactionKind !== "request_checkbox_confirmation") return [];
   const checkbox = notification.interactionKind === "request_checkbox_confirmation" ? notification.interactionCheckboxConfirmation : undefined;
   const supportsInlineAccept = !checkbox || checkbox.options.length <= 10;
-  const value = JSON.stringify({
+  const baseValue = {
     issueId: notification.issueId,
     interactionId: notification.interactionId,
     companyPrefix: notification.companyPrefix,
@@ -212,13 +213,16 @@ function renderConfirmationButtons(notification: NormalizedNotification): Array<
     detailsMarkdown: confirmation.detailsMarkdown ? truncateText(confirmation.detailsMarkdown, 320) : undefined,
     acceptLabel: confirmation.acceptLabel ? truncateText(confirmation.acceptLabel, 75) : undefined,
     rejectLabel: confirmation.rejectLabel ? truncateText(confirmation.rejectLabel, 75) : undefined,
-    ...(checkbox ? {
-      optionActionId: ACTION_IDS.interactionCheckboxSelect,
-      minSelected: checkbox.minSelected ?? 0,
-      maxSelected: checkbox.maxSelected ?? null,
-      defaultSelectedOptionIds: checkbox.defaultSelectedOptionIds ?? [],
-    } : {}),
-  });
+  };
+  const checkboxValue = checkbox ? {
+    optionActionId: ACTION_IDS.interactionCheckboxSelect,
+    minSelected: checkbox.minSelected ?? 0,
+    maxSelected: checkbox.maxSelected ?? null,
+  } : {};
+  const selectedValue = checkbox && supportsInlineAccept ? {
+    defaultSelectedOptionIds: checkbox.defaultSelectedOptionIds ?? [],
+  } : {};
+  const value = JSON.stringify({ ...baseValue, ...checkboxValue, ...selectedValue });
   const actions = supportsInlineAccept ? [button(confirmation.acceptLabel ?? "Accept", ACTION_IDS.interactionAccept, value, "primary")] : [];
   const rejectActionId = confirmation.rejectRequiresReason === true
     ? ACTION_IDS.interactionRejectStart

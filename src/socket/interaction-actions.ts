@@ -113,6 +113,10 @@ export async function handleInteractionConfirmationAction(
   const issueUrl = `${baseUrl}${issueInteractionPath(interaction.issueId, interaction.companyPrefix)}`;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (config.paperclipApiToken) headers.Authorization = `Bearer ${config.paperclipApiToken}`;
+  if (actionId === ACTION_IDS.interactionRejectStart || actionId === ACTION_IDS.interactionRejectCancel) {
+    const resolved = await fetchCurrentConfirmationReplacement(ctx, baseUrl, headers, interaction, issueUrl);
+    if (resolved) return resolved;
+  }
   if (actionId === ACTION_IDS.interactionRejectStart) {
     return replaceOriginalResponse(interactionConfirmationDeclineMessage(interaction, issueUrl));
   }
