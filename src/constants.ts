@@ -19,6 +19,9 @@ export const ACTION_IDS = {
   interactionSubmit: "pc.interaction.submit.v1",
   interactionAccept: "pc.interaction.accept.v1",
   interactionReject: "pc.interaction.reject.v1",
+  interactionRejectStart: "pc.interaction.reject_start.v1",
+  interactionRejectCancel: "pc.interaction.reject_cancel.v1",
+  interactionRejectReason: "pc.interaction.reject_reason.v1",
   interactionCheckboxSelect: "pc.interaction.checkbox_select.v1",
   suggestedTasksSelect: "pc.interaction.suggested_tasks_select.v1",
 } as const;

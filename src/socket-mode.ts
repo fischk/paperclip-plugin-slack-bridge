@@ -137,7 +137,12 @@ async function handleInteractive(
   } else if (actionId === ACTION_IDS.interactionSubmit) {
     handledKnownAction = true;
     result = await handleInteractionSubmitAction(ctx, config, body, action?.value);
-  } else if (actionId === ACTION_IDS.interactionAccept || actionId === ACTION_IDS.interactionReject) {
+  } else if (
+    actionId === ACTION_IDS.interactionAccept
+    || actionId === ACTION_IDS.interactionReject
+    || actionId === ACTION_IDS.interactionRejectStart
+    || actionId === ACTION_IDS.interactionRejectCancel
+  ) {
     handledKnownAction = true;
     result = await handleInteractionConfirmationAction(ctx, config, body, actionId, action?.value);
   } else if (actionId.startsWith(ACTION_IDS.interactionAnswerOption)) {

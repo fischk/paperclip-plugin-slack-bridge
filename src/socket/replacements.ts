@@ -1,7 +1,7 @@
 import { ACTION_IDS } from "../constants.js";
-import type { SlackMessage } from "../types.js";
-import type { IssueInteractionRef, SlackActionResponse, SocketContext } from "./types.js";
-import { recordField, stringArrayField, stringField } from "./utils.js";
+import type { SlackBlock, SlackMessage } from "../types.js";
+import type { InteractionActionValue, IssueInteractionRef, SlackActionResponse, SocketContext } from "./types.js";
+import { numberField, recordField, stringArrayField, stringField } from "./utils.js";
 
 export async function fetchCurrentInteractionRecord(
   ctx: SocketContext,
@@ -32,6 +32,186 @@ export function replaceOriginalResponse(message: SlackMessage): SlackActionRespo
   return { message, replaceOriginal: true, responseType: "in_channel" };
 }
 
+export function interactionConfirmationPendingMessage(interaction: InteractionActionValue, issueUrl: string): SlackMessage {
+  const title = interaction.title ?? interaction.identifier ?? "Confirmation requested";
+  const prompt = interaction.prompt ?? "Review the confirmation in Paperclip.";
+  const details = confirmationDetails(interaction);
+  const value = JSON.stringify(interaction);
+  return {
+    text: `${title}: confirmation requested`,
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `*${title}*\n*Confirmation requested*\n${prompt}${details}` },
+      },
+      {
+        type: "actions",
+        elements: [
+          slackButton(interaction.acceptLabel ?? "Accept", ACTION_IDS.interactionAccept, value, "primary"),
+          slackButton(interaction.rejectLabel ?? "Reject", ACTION_IDS.interactionRejectStart, value, "danger"),
+        ],
+      },
+      openIssueActions(issueUrl),
+      { type: "context", elements: [{ type: "mrkdwn", text: "Paperclip • human.input_needed • pending" }] },
+    ],
+  };
+}
+
+export function interactionCheckboxConfirmationPendingMessage(
+  record: Record<string, unknown> | undefined,
+  fallback: InteractionActionValue,
+  issueUrl: string,
+): SlackMessage {
+  const payload = recordField(record?.payload);
+  const options = arrayField(payload?.options)
+    .map((item) => recordField(item))
+    .map((item) => ({ id: stringField(item?.id), label: stringField(item?.label) }))
+    .filter((item): item is { id: string; label: string } => Boolean(item.id && item.label))
+    .slice(0, 10);
+  if (options.length === 0) return interactionConfirmationPendingMessage(fallback, issueUrl);
+
+  const title = stringField(record?.title) ?? fallback.title ?? fallback.identifier ?? "Checkbox confirmation requested";
+  const prompt = stringField(payload?.prompt) ?? fallback.prompt ?? "Review the confirmation in Paperclip.";
+  const summary = stringField(record?.summary) ?? fallback.summary;
+  const detailsMarkdown = stringField(payload?.detailsMarkdown) ?? fallback.detailsMarkdown;
+  const minSelected = numberField(payload?.minSelected) ?? fallback.minSelected ?? 0;
+  const maxSelected = payload?.maxSelected === null ? null : numberField(payload?.maxSelected) ?? fallback.maxSelected ?? null;
+  const defaultSelectedOptionIds = stringArrayField(payload?.defaultSelectedOptionIds) ?? fallback.defaultSelectedOptionIds;
+  const actionValue: InteractionActionValue = {
+    issueId: fallback.issueId,
+    interactionId: fallback.interactionId,
+    companyPrefix: fallback.companyPrefix,
+    kind: "request_checkbox_confirmation",
+    optionActionId: ACTION_IDS.interactionCheckboxSelect,
+    rejectRequiresReason: true,
+    title,
+    identifier: fallback.identifier,
+    prompt,
+    ...(summary ? { summary } : {}),
+    ...(detailsMarkdown ? { detailsMarkdown } : {}),
+    acceptLabel: stringField(payload?.acceptLabel) ?? fallback.acceptLabel,
+    rejectLabel: stringField(payload?.rejectLabel) ?? fallback.rejectLabel,
+    minSelected,
+    maxSelected,
+    taskClientKeys: [],
+    taskParentClientKeys: {},
+    defaultSelectedOptionIds,
+  };
+  const value = JSON.stringify(actionValue);
+  const details = confirmationDetails(actionValue);
+  return {
+    text: `${title}: checkbox confirmation requested`,
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `*${title}*\n*Checkbox confirmation requested*\n${prompt}${details}\n_${checkboxBoundsLabel(minSelected, maxSelected)}_` },
+      },
+      checkboxInputBlock(options, defaultSelectedOptionIds, minSelected === 0),
+      {
+        type: "actions",
+        elements: [
+          slackButton(actionValue.acceptLabel ?? "Accept", ACTION_IDS.interactionAccept, value, "primary"),
+          slackButton(actionValue.rejectLabel ?? "Reject", ACTION_IDS.interactionRejectStart, value, "danger"),
+        ],
+      },
+      openIssueActions(issueUrl),
+      { type: "context", elements: [{ type: "mrkdwn", text: "Paperclip • human.input_needed • pending" }] },
+    ],
+  };
+}
+
+export function interactionConfirmationDeclineMessage(interaction: InteractionActionValue, issueUrl: string): SlackMessage {
+  const title = interaction.title ?? interaction.identifier ?? "Confirmation requested";
+  const prompt = interaction.prompt ?? "Review the confirmation in Paperclip.";
+  const details = confirmationDetails(interaction);
+  const value = JSON.stringify(interaction);
+  return {
+    text: `${title}: decline notes needed`,
+    blocks: [
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: `*${title}*\n*Send back with notes*\n${prompt}${details}` },
+      },
+      {
+        type: "input",
+        block_id: interactionRejectReasonBlockId(),
+        label: { type: "plain_text", text: "Decline notes", emoji: true },
+        element: {
+          type: "plain_text_input",
+          action_id: ACTION_IDS.interactionRejectReason,
+          multiline: true,
+          max_length: 3000,
+          placeholder: { type: "plain_text", text: "Tell the agent what you want changed.", emoji: true },
+        },
+        optional: false,
+      },
+      {
+        type: "actions",
+        elements: [
+          slackButton(interaction.rejectLabel ?? "Send back", ACTION_IDS.interactionReject, value, "danger"),
+          slackButton("Cancel", ACTION_IDS.interactionRejectCancel, value),
+        ],
+      },
+      openIssueActions(issueUrl),
+      { type: "context", elements: [{ type: "mrkdwn", text: "Paperclip • human.input_needed • send-back notes" }] },
+    ],
+  };
+}
+
+function confirmationDetails(interaction: InteractionActionValue): string {
+  const summary = interaction.summary ? `\n_${interaction.summary}_` : "";
+  const details = interaction.detailsMarkdown ? `\n>${interaction.detailsMarkdown.replace(/\n/g, "\n>")}` : "";
+  return `${summary}${details}`;
+}
+
+function interactionRejectReasonBlockId(): string {
+  return "pc_interaction_reject_reason";
+}
+
+function checkboxInputBlock(options: Array<{ id: string; label: string }>, selectedOptionIds: string[], optional: boolean): SlackBlock {
+  const renderedOptions = options.map((option) => ({
+    text: { type: "plain_text", text: truncateSlackText(option.label, 75), emoji: true },
+    value: truncateSlackText(option.id, 120),
+  }));
+  const selected = new Set(selectedOptionIds);
+  const initialOptions = renderedOptions.filter((option) => selected.has(String(option.value)));
+  return {
+    type: "input",
+    block_id: "pc_interaction_checkbox_confirmation",
+    label: { type: "plain_text", text: "Options", emoji: true },
+    element: {
+      type: "checkboxes",
+      action_id: ACTION_IDS.interactionCheckboxSelect,
+      options: renderedOptions,
+      ...(initialOptions.length > 0 ? { initial_options: initialOptions } : {}),
+    },
+    optional,
+  };
+}
+
+function checkboxBoundsLabel(minSelected: number, maxSelected: number | null): string {
+  if (maxSelected !== null) return `Select ${minSelected === maxSelected ? minSelected : `${minSelected}–${maxSelected}`} option${maxSelected === 1 ? "" : "s"}.`;
+  if (minSelected > 0) return `Select at least ${minSelected} option${minSelected === 1 ? "" : "s"}.`;
+  return "Select any options that apply.";
+}
+
+function slackButton(text: string, actionId: string, value: string, style?: "primary" | "danger") {
+  return {
+    type: "button",
+    text: { type: "plain_text", text, emoji: true },
+    action_id: actionId,
+    value,
+    ...(style ? { style } : {}),
+  };
+}
+
+function openIssueActions(issueUrl: string) {
+  return {
+    type: "actions",
+    elements: [{ type: "button", text: { type: "plain_text", text: "Open Issue", emoji: true }, url: issueUrl, action_id: ACTION_IDS.issueOpen }],
+  };
+}
+
 export async function fetchCurrentConfirmationReplacement(
   ctx: SocketContext,
   baseUrl: string,
@@ -54,15 +234,7 @@ export function interactionConfirmationReplacement(
   if (kind === "suggest_tasks") return interactionSuggestedTasksReplacement(record, fallbackStatus, issueUrl);
   const status = stringField(record?.status) ?? fallbackStatus;
   const title = stringField(record?.title) ?? confirmationStatusTitle(status);
-  const result = recordField(record?.result);
-  const reason = stringField(result?.reason);
-  const outcome = stringField(result?.outcome);
-  const details = reason
-    ? `Reason: ${reason}`
-    : outcome && outcome !== status
-      ? `Outcome: ${outcome}`
-      : confirmationStatusBody(status);
-  return replaceOriginalResponse(interactionResolvedMessage(title, confirmationStatusTitle(status), details, issueUrl));
+  return replaceOriginalResponse(interactionConfirmationResolvedMessage(title, status, issueUrl));
 }
 
 export function interactionSuggestedTasksReplacement(
@@ -112,13 +284,28 @@ function confirmationStatusTitle(status: string): string {
   }
 }
 
-function confirmationStatusBody(status: string): string {
+export function interactionConfirmationResolvedMessage(title: string, status: string, issueUrl: string): SlackMessage {
+  const label = confirmationReceiptLabel(status);
+  return {
+    text: `${label}: ${title}`,
+    blocks: [{
+      type: "section",
+      text: { type: "mrkdwn", text: `${label} · <${issueUrl}|View in Paperclip>\n${truncateSlackText(title, 220)}` },
+    }],
+  };
+}
+
+function confirmationReceiptLabel(status: string): string {
   switch (status) {
-    case "accepted": return "Accepted from Slack and recorded in Paperclip.";
-    case "rejected": return "Rejected from Slack and recorded in Paperclip.";
-    case "expired": return "This confirmation is no longer current in Paperclip.";
-    default: return "Paperclip has recorded the current confirmation state.";
+    case "accepted": return "✅ Approved";
+    case "rejected": return "↩️ Sent back";
+    case "expired": return "⌛ Expired";
+    default: return `ℹ️ Confirmation ${status.replace(/_/g, " ")}`;
   }
+}
+
+function truncateSlackText(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
 export function interactionResolvedMessage(title: string, statusTitle: string, detail: string, issueUrl: string): SlackMessage {

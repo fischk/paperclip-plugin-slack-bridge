@@ -42,13 +42,21 @@ vi.mock("@slack/socket-mode", () => {
 vi.mock("../src/slack-api.js", () => slackApiMock);
 
 const config: SlackNotificationsConfig = {
-  slackBotToken: "xoxb-redacted",
-  slackAppToken: "xapp-redacted",
+  slackBotToken: "test-bot-token",
+  slackAppToken: "test-app-token",
   defaultChannelId: "C0000000000",
 };
 
 const scopeDenied = new Error('Plugin "plugin-1" is not allowed to perform "companies.list": the worker referenced a missing, expired, or unknown invocation scope');
 const capabilityDenied = new Error('Plugin "plugin-1" is missing required capability "issues.wakeup" for method "issues.requestWakeup"');
+
+function collectButtons(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(collectButtons);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const own = record.type === "button" ? [record] : [];
+  return own.concat(Object.values(record).flatMap(collectButtons));
+}
 
 describe("Slack Socket Mode ingress", () => {
   beforeEach(() => {
@@ -70,7 +78,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
 
     const client = socketMock.instances[0];
     expect(client.handlers.has("slash_commands")).toBe(true);
@@ -127,13 +135,13 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
 
     const cases = [
-      [ACTION_IDS.approvalApprove, "approve", "Approval approved"],
-      [ACTION_IDS.approvalDeny, "reject", "Approval rejected"],
-      [ACTION_IDS.approvalRequestRevision, "request-revision", "Revision requested"],
+      [ACTION_IDS.approvalApprove, "approve", "✅ Approved"],
+      [ACTION_IDS.approvalDeny, "reject", "↩️ Rejected"],
+      [ACTION_IDS.approvalRequestRevision, "request-revision", "↩️ Revision requested"],
     ] as const;
 
     for (const [index, [actionId, route, label]] of cases.entries()) {
@@ -160,7 +168,8 @@ describe("Slack Socket Mode ingress", () => {
       const rendered = JSON.stringify(call?.[2]);
       expect(rendered).toContain(label);
       expect(rendered).toContain("Board Approval: Ratify package id");
-      expect(rendered).toContain("Open in Paperclip");
+      expect(rendered).toContain("View in Paperclip");
+      expect(rendered).not.toContain("Resolved as");
       expect(rendered).not.toContain(ACTION_IDS.approvalApprove);
       expect(rendered).not.toContain(ACTION_IDS.approvalDeny);
       expect(rendered).not.toContain(ACTION_IDS.approvalRequestRevision);
@@ -199,7 +208,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -225,11 +234,12 @@ describe("Slack Socket Mode ingress", () => {
     expect(slackApiMock.respondToInteraction).toHaveBeenCalledWith(
       expect.anything(),
       "https://slack.example/response",
-      expect.objectContaining({ text: "Approval approved: Board Approval: Ratify package id" }),
+      expect.objectContaining({ text: "✅ Approved: Board Approval: Ratify package id" }),
       expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }),
     );
     const rendered = JSON.stringify((slackApiMock.respondToInteraction.mock.calls as unknown[][])[0][2]);
-    expect(rendered).toContain("Already approved from Slack.");
+    expect(rendered).toContain("View in Paperclip");
+    expect(rendered).not.toContain("Already approved from Slack.");
     expect(rendered).not.toContain("Approval rejected failed");
   });
 
@@ -246,7 +256,7 @@ describe("Slack Socket Mode ingress", () => {
         result: {
           version: 1,
           outcome: status,
-          ...(status === "rejected" ? { reason: "Rejected from Slack." } : {}),
+          ...(status === "rejected" ? { reason: "Needs safer rollout." } : {}),
         },
       }), { status: 200 });
     });
@@ -259,14 +269,14 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const cases = [
-      [ACTION_IDS.interactionAccept, "accept", "Confirmation accepted"],
-      [ACTION_IDS.interactionReject, "reject", "Confirmation rejected"],
+      [ACTION_IDS.interactionAccept, "accept", "✅ Approved", undefined],
+      [ACTION_IDS.interactionReject, "reject", "↩️ Sent back", "Needs safer rollout."],
     ] as const;
 
-    for (const [index, [actionId, route, label]] of cases.entries()) {
+    for (const [index, [actionId, route, label, rejectReason]] of cases.entries()) {
       await client.handlers.get("block_actions")?.({
         type: "block_actions",
         ack: vi.fn(async () => undefined),
@@ -279,14 +289,29 @@ describe("Slack Socket Mode ingress", () => {
           actions: [{
             action_id: actionId,
             action_ts: `523.${index + 1}`,
-            value: JSON.stringify({ issueId: "issue-1", interactionId: "interaction-confirm-1", companyPrefix: "COM", kind: "request_confirmation" }),
+            value: JSON.stringify({ issueId: "issue-1", interactionId: "interaction-confirm-1", companyPrefix: "COM", kind: "request_confirmation", rejectRequiresReason: actionId === ACTION_IDS.interactionReject }),
           }],
+          ...(rejectReason ? {
+            state: {
+              values: {
+                pc_interaction_reject_reason: {
+                  [ACTION_IDS.interactionRejectReason]: {
+                    type: "plain_text_input",
+                    value: rejectReason,
+                  },
+                },
+              },
+            },
+          } : {}),
         },
       });
 
       expect(fetch).toHaveBeenCalledWith(
         `http://127.0.0.1:3100/api/issues/issue-1/interactions/interaction-confirm-1/${route}`,
-        expect.objectContaining({ method: "POST" }),
+        expect.objectContaining({
+          method: "POST",
+          ...(route === "reject" ? { body: JSON.stringify({ reason: rejectReason }) } : {}),
+        }),
       );
       expect(slackApiMock.respondToInteraction).toHaveBeenCalledTimes(index + 1);
       const call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
@@ -294,10 +319,309 @@ describe("Slack Socket Mode ingress", () => {
       const rendered = JSON.stringify(call?.[2]);
       expect(rendered).toContain(label);
       expect(rendered).toContain("Confirm deployment plan");
-      expect(rendered).toContain("Open Issue");
+      expect(rendered).toContain("View in Paperclip");
+      expect(rendered).not.toContain("Needs safer rollout.");
+      expect(rendered).not.toContain("Open Issue");
       expect(rendered).not.toContain(ACTION_IDS.interactionAccept);
       expect(rendered).not.toContain(ACTION_IDS.interactionReject);
     }
+  });
+
+  it("opens and cancels the two-stage decline notes state without calling Paperclip", async () => {
+    const { startSlackSocketMode } = await import("../src/socket-mode.js");
+    const ctx = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      http: { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) },
+      metrics: { write: vi.fn(async () => undefined) },
+      companies: { list: vi.fn(async () => []) },
+      issues: { list: vi.fn(async () => []) },
+    } as any;
+
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
+    const client = socketMock.instances[0];
+    const { renderNotification } = await import("../src/block-kit/index.js");
+    const initialCard = renderNotification({
+      kind: "human.input_needed",
+      eventId: "evt-confirm",
+      eventType: "human.input_needed",
+      occurredAt: "2026-06-27T00:00:00.000Z",
+      companyId: "company-1",
+      companyPrefix: "COM",
+      entityId: "issue-1",
+      issueId: "issue-1",
+      identifier: "COM-1",
+      title: "Human input needed for deployment",
+      interactionId: "interaction-confirm-1",
+      interactionKind: "request_confirmation",
+      interactionTitle: "Confirm deployment plan",
+      interactionConfirmation: {
+        prompt: "Should the agent deploy?",
+        acceptLabel: "Ship amber label proof",
+        rejectLabel: "Return violet label proof",
+        rejectRequiresReason: true,
+      },
+      raw: {},
+    } as any, { ...config, paperclipBaseUrl: "http://127.0.0.1:3100" });
+    const rejectStartButton = collectButtons(initialCard).find((button) => button.action_id === ACTION_IDS.interactionRejectStart);
+    expect(rejectStartButton).toBeTruthy();
+    const value = String(rejectStartButton?.value);
+    expect(JSON.parse(value)).toEqual(expect.objectContaining({
+      issueId: "issue-1",
+      interactionId: "interaction-confirm-1",
+      kind: "request_confirmation",
+      rejectRequiresReason: true,
+      acceptLabel: "Ship amber label proof",
+      rejectLabel: "Return violet label proof",
+      title: "Confirm deployment plan",
+      prompt: "Should the agent deploy?",
+    }));
+
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        trigger_id: "trigger-confirm-reject-start",
+        user: { id: "U1" },
+        container: { message_ts: "524.456" },
+        actions: [{ action_id: ACTION_IDS.interactionRejectStart, action_ts: "524.457", value }],
+      },
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    let call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    expect(call?.[3]).toEqual(expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }));
+    let rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("Send back with notes");
+    expect(rendered).toContain("Decline notes");
+    expect(rendered).toContain("Return violet label proof");
+    expect(rendered).toContain(ACTION_IDS.interactionReject);
+    expect(rendered).toContain(ACTION_IDS.interactionRejectCancel);
+
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        trigger_id: "trigger-confirm-reject-cancel",
+        user: { id: "U1" },
+        container: { message_ts: "524.789" },
+        actions: [{ action_id: ACTION_IDS.interactionRejectCancel, action_ts: "524.790", value }],
+      },
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(slackApiMock.respondToInteraction).toHaveBeenCalledTimes(2);
+    call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("Confirmation requested");
+    expect(rendered).toContain("Ship amber label proof");
+    expect(rendered).toContain("Return violet label proof");
+    expect(rendered).toContain(ACTION_IDS.interactionAccept);
+    expect(rendered).toContain(ACTION_IDS.interactionRejectStart);
+    expect(rendered).not.toContain("Decline notes");
+    expect(rendered).not.toContain("Choose the primary action");
+    expect(rendered).not.toContain("Sending back will ask for notes");
+  });
+
+  it("opens, cancels, and submits two-stage checkbox decline notes from the rendered Slack value", async () => {
+    const checkboxRecord = {
+      id: "interaction-check-reason",
+      issueId: "issue-1",
+      kind: "request_checkbox_confirmation",
+      status: "pending",
+      title: "Confirm selected checks",
+      summary: "Pick a bounded set of checks.",
+      payload: {
+        version: 1,
+        prompt: "Which checks may the agent proceed with?",
+        detailsMarkdown: "Only select checks that are ready.",
+        options: [
+          { id: "docs", label: "Docs are updated" },
+          { id: "tests", label: "Tests are green" },
+        ],
+        defaultSelectedOptionIds: ["docs"],
+        minSelected: 1,
+        maxSelected: 2,
+        acceptLabel: "Proceed with selected",
+        rejectLabel: "Return with notes",
+        rejectRequiresReason: true,
+      },
+      result: null,
+    };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/issues/issue-1/interactions") && !init?.method) {
+        return new Response(JSON.stringify([checkboxRecord]), { status: 200 });
+      }
+      if (url.endsWith("/api/issues/issue-1/interactions/interaction-check-reason/reject")) {
+        return new Response(JSON.stringify({
+          ...checkboxRecord,
+          status: "rejected",
+          result: { version: 1, outcome: "rejected", reason: "Use a safer subset." },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const { startSlackSocketMode } = await import("../src/socket-mode.js");
+    const { renderNotification } = await import("../src/block-kit/index.js");
+    const ctx = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      http: { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) },
+      metrics: { write: vi.fn(async () => undefined) },
+      companies: { list: vi.fn(async () => []) },
+      issues: { list: vi.fn(async () => []) },
+    } as any;
+
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
+    const client = socketMock.instances[0];
+    const initialCard = renderNotification({
+      kind: "human.input_needed",
+      eventId: "evt-checkbox-confirm",
+      eventType: "human.input_needed",
+      occurredAt: "2026-06-27T00:00:00.000Z",
+      companyId: "company-1",
+      companyPrefix: "COM",
+      entityId: "issue-1",
+      issueId: "issue-1",
+      identifier: "COM-1",
+      title: "Human input needed for checklist",
+      interactionId: "interaction-check-reason",
+      interactionKind: "request_checkbox_confirmation",
+      interactionTitle: "Confirm selected checks",
+      interactionSummary: "Pick a bounded set of checks.",
+      interactionCheckboxConfirmation: checkboxRecord.payload,
+      raw: {},
+    } as any, { ...config, paperclipBaseUrl: "http://127.0.0.1:3100" });
+    const rejectStartButton = collectButtons(initialCard).find((button) => button.action_id === ACTION_IDS.interactionRejectStart);
+    expect(rejectStartButton).toBeTruthy();
+    const value = String(rejectStartButton?.value);
+    expect(JSON.parse(value)).toEqual(expect.objectContaining({
+      issueId: "issue-1",
+      interactionId: "interaction-check-reason",
+      kind: "request_checkbox_confirmation",
+      rejectRequiresReason: true,
+      acceptLabel: "Proceed with selected",
+      rejectLabel: "Return with notes",
+      minSelected: 1,
+      maxSelected: 2,
+      defaultSelectedOptionIds: ["docs"],
+    }));
+
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        actions: [{ action_id: ACTION_IDS.interactionRejectStart, action_ts: "601.001", value }],
+      },
+    });
+    let call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    let rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("Send back with notes");
+    expect(rendered).toContain("Decline notes");
+    expect(rendered).toContain("Return with notes");
+    expect(rendered).toContain(ACTION_IDS.interactionRejectCancel);
+
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        actions: [{ action_id: ACTION_IDS.interactionRejectCancel, action_ts: "601.002", value }],
+      },
+    });
+    call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("Checkbox confirmation requested");
+    expect(rendered).toContain("Docs are updated");
+    expect(rendered).toContain("Proceed with selected");
+    expect(rendered).toContain("Return with notes");
+    expect(rendered).toContain(ACTION_IDS.interactionCheckboxSelect);
+    expect(rendered).toContain(ACTION_IDS.interactionRejectStart);
+    expect(rendered).not.toContain("Decline notes");
+
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        actions: [{ action_id: ACTION_IDS.interactionReject, action_ts: "601.003", value }],
+        state: {
+          values: {
+            pc_interaction_reject_reason: {
+              [ACTION_IDS.interactionRejectReason]: {
+                type: "plain_text_input",
+                value: "Use a safer subset.",
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:3100/api/issues/issue-1/interactions/interaction-check-reason/reject",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "Use a safer subset." }) }),
+    );
+    call = (slackApiMock.respondToInteraction.mock.calls as unknown[][]).at(-1);
+    rendered = JSON.stringify(call?.[2]);
+    expect(rendered).toContain("↩️ Sent back");
+    expect(rendered).toContain("View in Paperclip");
+    expect(rendered).not.toContain("Use a safer subset.");
+  });
+
+  it("asks for decline notes before final rejection when the two-stage form is blank", async () => {
+    const { startSlackSocketMode } = await import("../src/socket-mode.js");
+    const ctx = {
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      http: { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) },
+      metrics: { write: vi.fn(async () => undefined) },
+      companies: { list: vi.fn(async () => []) },
+      issues: { list: vi.fn(async () => []) },
+    } as any;
+
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
+    const client = socketMock.instances[0];
+    await client.handlers.get("block_actions")?.({
+      type: "block_actions",
+      ack: vi.fn(async () => undefined),
+      body: {
+        type: "block_actions",
+        response_url: "https://slack.example/response",
+        trigger_id: "trigger-confirm-missing-reason",
+        user: { id: "U1" },
+        container: { message_ts: "525.456" },
+        actions: [{
+          action_id: ACTION_IDS.interactionReject,
+          action_ts: "525.457",
+          value: JSON.stringify({ issueId: "issue-1", interactionId: "interaction-confirm-1", companyPrefix: "COM", kind: "request_confirmation", rejectRequiresReason: true }),
+        }],
+        state: {
+          values: {
+            pc_interaction_reject_reason: {
+              [ACTION_IDS.interactionRejectReason]: {
+                type: "plain_text_input",
+                value: "   ",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(slackApiMock.respondToInteraction).toHaveBeenCalledWith(
+      expect.anything(),
+      "https://slack.example/response",
+      expect.objectContaining({ text: expect.stringContaining("Decline needs notes") }),
+      expect.objectContaining({ responseType: "ephemeral" }),
+    );
   });
 
   it("posts request-checkbox-confirmation selected options to Paperclip and replaces the Slack card", async () => {
@@ -326,7 +650,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -377,7 +701,7 @@ describe("Slack Socket Mode ingress", () => {
     expect(slackApiMock.respondToInteraction).toHaveBeenCalledWith(
       expect.anything(),
       "https://slack.example/response",
-      expect.objectContaining({ text: "Confirm selected checks: Confirmation accepted" }),
+      expect.objectContaining({ text: "✅ Approved: Confirm selected checks" }),
       expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }),
     );
   });
@@ -392,7 +716,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -458,7 +782,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -526,7 +850,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -601,7 +925,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -631,7 +955,7 @@ describe("Slack Socket Mode ingress", () => {
     expect(slackApiMock.respondToInteraction).toHaveBeenCalledWith(
       expect.anything(),
       "https://slack.example/response",
-      expect.objectContaining({ text: "Confirm deployment plan: Confirmation accepted" }),
+      expect.objectContaining({ text: "✅ Approved: Confirm deployment plan" }),
       expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }),
     );
   });
@@ -646,7 +970,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const ack = vi.fn(async () => undefined);
     await client.handlers.get("block_actions")?.({
@@ -677,7 +1001,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const ack = vi.fn(async () => undefined);
     await client.handlers.get("block_actions")?.({
@@ -774,7 +1098,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     await client.handlers.get("block_actions")?.({
       type: "block_actions",
@@ -833,7 +1157,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const ack = vi.fn(async () => undefined);
     await client.handlers.get("block_actions")?.({
@@ -885,7 +1209,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const envelope = {
       type: "block_actions",
@@ -909,7 +1233,7 @@ describe("Slack Socket Mode ingress", () => {
     expect(slackApiMock.respondToInteraction).toHaveBeenCalledWith(
       expect.anything(),
       "https://slack.example/response",
-      expect.objectContaining({ text: expect.stringContaining("Approval approved") }),
+      expect.objectContaining({ text: expect.stringContaining("✅ Approved") }),
       expect.objectContaining({ replaceOriginal: true, responseType: "in_channel" }),
     );
   });
@@ -929,7 +1253,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []), create },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
 
     const respond = vi.fn(async () => ({ ok: true }));
@@ -960,7 +1284,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const respond = vi.fn(async () => ({ ok: true }));
     slackApiMock.respondToInteraction.mockImplementationOnce(respond);
@@ -991,7 +1315,7 @@ describe("Slack Socket Mode ingress", () => {
       issues: { list: vi.fn(async () => []) },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const respond = vi.fn(async () => ({ ok: true }));
     slackApiMock.respondToInteraction.mockImplementationOnce(respond);
@@ -1027,7 +1351,7 @@ describe("Slack Socket Mode ingress", () => {
       },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
     const respond = vi.fn(async () => ({ ok: true }));
     slackApiMock.respondToInteraction.mockImplementation(respond);
@@ -1072,7 +1396,7 @@ describe("Slack Socket Mode ingress", () => {
       },
     } as any;
 
-    await startSlackSocketMode(ctx, config, "xoxb-redacted", "xapp-redacted");
+    await startSlackSocketMode(ctx, config, "test-bot-token", "test-app-token");
     const client = socketMock.instances[0];
 
     const respond = vi.fn(async () => ({ ok: true }));

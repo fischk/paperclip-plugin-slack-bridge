@@ -43,6 +43,14 @@ export interface InteractionActionValue extends IssueInteractionRef {
   companyPrefix?: string;
   kind?: string;
   optionActionId?: string;
+  rejectRequiresReason?: boolean;
+  title?: string;
+  identifier?: string;
+  prompt?: string;
+  summary?: string;
+  detailsMarkdown?: string;
+  acceptLabel?: string;
+  rejectLabel?: string;
   minSelected?: number;
   maxSelected?: number | null;
   taskClientKeys: string[];

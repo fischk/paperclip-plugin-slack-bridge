@@ -56,10 +56,7 @@ function renderInteractionConfirmation(notification: NormalizedNotification) {
   const title = notification.interactionTitle ? `*${truncateText(notification.interactionTitle, 220)}*\n` : "";
   const summary = notification.interactionSummary ? `\n_${truncateText(notification.interactionSummary, 450)}_` : "";
   const details = confirmation.detailsMarkdown ? `\n>${truncateText(confirmation.detailsMarkdown, 900).replace(/\n/g, "\n>")}` : "";
-  const reasonNote = confirmation.rejectRequiresReason
-    ? "\n_Declining this confirmation requires a reason; open the issue to decline for now._"
-    : "";
-  return [section(`${title}*Confirmation requested*\n${truncateText(confirmation.prompt, 900)}${summary}${details}${reasonNote}`)];
+  return [section(`${title}*Confirmation requested*\n${truncateText(confirmation.prompt, 900)}${summary}${details}`)];
 }
 
 function renderInteractionCheckboxConfirmation(notification: NormalizedNotification) {
@@ -75,10 +72,7 @@ function renderInteractionCheckboxConfirmation(notification: NormalizedNotificat
     : min > 0
       ? `Select at least ${min} option${min === 1 ? "" : "s"}.`
       : "Select any options that apply.";
-  const reasonNote = confirmation.rejectRequiresReason
-    ? "\n_Declining this confirmation requires a reason; open the issue to decline for now._"
-    : "";
-  const blocks = [section(`${title}*Checkbox confirmation requested*\n${truncateText(confirmation.prompt, 900)}${summary}${details}\n_${bounds}_${reasonNote}`)];
+  const blocks = [section(`${title}*Checkbox confirmation requested*\n${truncateText(confirmation.prompt, 900)}${summary}${details}\n_${bounds}_`)];
   if (confirmation.options.length <= 10) {
     blocks.push(inputBlock(
       checkboxConfirmationBlockId(),
@@ -210,6 +204,14 @@ function renderConfirmationButtons(notification: NormalizedNotification): Array<
     interactionId: notification.interactionId,
     companyPrefix: notification.companyPrefix,
     kind: notification.interactionKind,
+    rejectRequiresReason: confirmation.rejectRequiresReason === true,
+    title: truncateText(notification.interactionTitle ?? notification.title, 180),
+    identifier: notification.identifier ? truncateText(notification.identifier, 80) : undefined,
+    prompt: truncateText(confirmation.prompt, 360),
+    summary: notification.interactionSummary ? truncateText(notification.interactionSummary, 160) : undefined,
+    detailsMarkdown: confirmation.detailsMarkdown ? truncateText(confirmation.detailsMarkdown, 320) : undefined,
+    acceptLabel: confirmation.acceptLabel ? truncateText(confirmation.acceptLabel, 75) : undefined,
+    rejectLabel: confirmation.rejectLabel ? truncateText(confirmation.rejectLabel, 75) : undefined,
     ...(checkbox ? {
       optionActionId: ACTION_IDS.interactionCheckboxSelect,
       minSelected: checkbox.minSelected ?? 0,
@@ -218,9 +220,10 @@ function renderConfirmationButtons(notification: NormalizedNotification): Array<
     } : {}),
   });
   const actions = supportsInlineAccept ? [button(confirmation.acceptLabel ?? "Accept", ACTION_IDS.interactionAccept, value, "primary")] : [];
-  if (confirmation.rejectRequiresReason !== true) {
-    actions.push(button(confirmation.rejectLabel ?? "Reject", ACTION_IDS.interactionReject, value, "danger"));
-  }
+  const rejectActionId = confirmation.rejectRequiresReason === true
+    ? ACTION_IDS.interactionRejectStart
+    : ACTION_IDS.interactionReject;
+  if (rejectActionId) actions.push(button(confirmation.rejectLabel ?? "Reject", rejectActionId, value, "danger"));
   return actions;
 }
 
