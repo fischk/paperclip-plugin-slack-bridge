@@ -45,7 +45,7 @@
     "@paperclipai/shared": "^2026.618.0",
     "@types/node": "^26.1.0",
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   },
   "dependencies": {
