@@ -8,8 +8,11 @@ export function renderApprovalCard(notification: NormalizedNotification, baseUrl
   const actionValue = approvalActionValue(approvalId, notification.companyPrefix);
   const url = notification.url ?? paperclipUrl(baseUrl, approvalPath(approvalId, notification.companyPrefix));
   const isPendingRequest = notification.kind === "approval.created" && (!notification.status || notification.status === "pending");
-  const heading = isPendingRequest ? "*Approval requested* :rotating_light:" : `*${humanizeApprovalStatus(notification.status)}* :white_check_mark:`;
   const approvalTitle = notification.approvalTitle ?? notification.title;
+  if (!isPendingRequest) {
+    return renderResolvedApprovalReceipt(notification.status, approvalTitle, url);
+  }
+  const heading = "*Approval requested* :rotating_light:";
   const summary = notification.summary ?? notification.description;
   const fields = fieldsBlock([
     ["Type", humanizeApprovalType(notification.approvalType)],
@@ -44,6 +47,27 @@ export function renderApprovalCard(notification: NormalizedNotification, baseUrl
 
 function approvalPath(approvalId: string, companyPrefix?: string): string {
   return companyPrefix ? `/${companyPrefix}/approvals/${approvalId}` : `/approvals/${approvalId}`;
+}
+
+function renderResolvedApprovalReceipt(status: string | undefined, title: string, url: string): SlackMessage {
+  const label = approvalReceiptLabel(status);
+  const safeTitle = truncateText(title, 220);
+  return {
+    text: `${label}: ${safeTitle}`,
+    blocks: [{
+      type: "section",
+      text: { type: "mrkdwn", text: `${label} · <${url}|View in Paperclip>\n${safeTitle}` },
+    }],
+  };
+}
+
+function approvalReceiptLabel(status?: string): string {
+  switch (status) {
+    case "approved": return "✅ Approved";
+    case "rejected": return "↩️ Rejected";
+    case "revision_requested": return "↩️ Revision requested";
+    default: return status ? `ℹ️ ${humanizeApprovalStatus(status)}` : "ℹ️ Approval decided";
+  }
 }
 
 function approvalActionValue(approvalId: string, companyPrefix?: string): string {

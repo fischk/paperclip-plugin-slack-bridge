@@ -3,7 +3,7 @@ import type { SlackMessage, SlackNotificationsConfig } from "../types.js";
 import type { SlackActionResult, SocketContext } from "./types.js";
 import { parseInteractionActionValue, parseInteractionAnswerValue, parseInteractionSubmitValue } from "./action-values.js";
 import { selectedMultiValues, selectedOptionIdsFromState, stateElement } from "./slack-state.js";
-import { fetchCurrentConfirmationReplacement, fetchResolvedInteractionMessage, interactionAnsweredMessage, interactionConfirmationReplacement, replaceOriginalResponse } from "./replacements.js";
+import { fetchCurrentConfirmationReplacement, fetchCurrentInteractionRecord, fetchResolvedInteractionMessage, interactionAnsweredMessage, interactionCheckboxConfirmationPendingMessage, interactionConfirmationDeclineMessage, interactionConfirmationPendingMessage, interactionConfirmationReplacement, replaceOriginalResponse } from "./replacements.js";
 import { issueInteractionPath, recordField, safeJson, simpleMessage, stringField } from "./utils.js";
 
 interface InteractionAnswerSummary {
@@ -111,6 +111,22 @@ export async function handleInteractionConfirmationAction(
   if (!interaction.issueId || !interaction.interactionId) return null;
   const baseUrl = (config.paperclipBaseUrl || DEFAULT_PAPERCLIP_BASE_URL).replace(/\/$/, "");
   const issueUrl = `${baseUrl}${issueInteractionPath(interaction.issueId, interaction.companyPrefix)}`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.paperclipApiToken) headers.Authorization = `Bearer ${config.paperclipApiToken}`;
+  if (actionId === ACTION_IDS.interactionRejectStart || actionId === ACTION_IDS.interactionRejectCancel) {
+    const resolved = await fetchCurrentConfirmationReplacement(ctx, baseUrl, headers, interaction, issueUrl);
+    if (resolved) return resolved;
+  }
+  if (actionId === ACTION_IDS.interactionRejectStart) {
+    return replaceOriginalResponse(interactionConfirmationDeclineMessage(interaction, issueUrl));
+  }
+  if (actionId === ACTION_IDS.interactionRejectCancel) {
+    if (interaction.kind === "request_checkbox_confirmation") {
+      const record = await fetchCurrentInteractionRecord(ctx, baseUrl, headers, interaction, "Slack checkbox confirmation cancel");
+      return replaceOriginalResponse(interactionCheckboxConfirmationPendingMessage(record, interaction, issueUrl));
+    }
+    return replaceOriginalResponse(interactionConfirmationPendingMessage(interaction, issueUrl));
+  }
   const route = actionId === ACTION_IDS.interactionAccept ? "accept" : "reject";
   const checkboxOptionIds = route === "accept" && interaction.kind === "request_checkbox_confirmation"
     ? selectedMultiValues(body, interaction.optionActionId ?? ACTION_IDS.interactionCheckboxSelect, interaction.defaultSelectedOptionIds)
@@ -118,6 +134,9 @@ export async function handleInteractionConfirmationAction(
   const suggestedTaskClientKeys = route === "accept" && interaction.kind === "suggest_tasks"
     ? selectedMultiValues(body, interaction.optionActionId ?? ACTION_IDS.suggestedTasksSelect, interaction.taskClientKeys)
     : [];
+  const rejectReason = route === "reject"
+    ? stringField(stateElement(body, ACTION_IDS.interactionRejectReason)?.value)?.trim()
+    : undefined;
   if (route === "accept" && interaction.kind === "suggest_tasks") {
     if (suggestedTaskClientKeys.length === 0) {
       return simpleMessage("Selection needed", "Pick at least one suggested task, then create selected tasks again.", config, issueUrl);
@@ -143,8 +162,9 @@ export async function handleInteractionConfirmationAction(
       return simpleMessage("Too many selections", `Pick at most ${maxSelected} option${maxSelected === 1 ? "" : "s"}, then accept again.`, config, issueUrl);
     }
   }
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (config.paperclipApiToken) headers.Authorization = `Bearer ${config.paperclipApiToken}`;
+  if (route === "reject" && interaction.rejectRequiresReason === true && !rejectReason) {
+    return simpleMessage("Decline needs notes", "Add a short reason in Decline notes, then send back again.", config, issueUrl);
+  }
   try {
     const response = await fetch(
       `${baseUrl}/api/issues/${encodeURIComponent(interaction.issueId)}/interactions/${encodeURIComponent(interaction.interactionId)}/${route}`,
@@ -152,7 +172,7 @@ export async function handleInteractionConfirmationAction(
         method: "POST",
         headers,
         body: JSON.stringify(route === "reject"
-          ? { reason: interaction.kind === "suggest_tasks" ? "Rejected suggested tasks from Slack." : "Rejected from Slack." }
+          ? { reason: rejectReason || (interaction.kind === "suggest_tasks" ? "Rejected suggested tasks from Slack." : "Rejected from Slack.") }
           : interaction.kind === "request_checkbox_confirmation"
             ? { selectedOptionIds: checkboxOptionIds }
             : interaction.kind === "suggest_tasks"

@@ -10,6 +10,24 @@ const config: SlackNotificationsConfig = {
   paperclipBaseUrl: "http://127.0.0.1:3100",
 };
 
+
+function collectButtonValues(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(collectButtonValues);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const ownValue = record.type === "button" && typeof record.value === "string" ? [record.value] : [];
+  return ownValue.concat(Object.values(record).flatMap(collectButtonValues));
+}
+
+function collectButtonTexts(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(collectButtonTexts);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  const text = record.text && typeof record.text === "object" ? (record.text as Record<string, unknown>).text : undefined;
+  const ownText = record.type === "button" && typeof text === "string" ? [text] : [];
+  return ownText.concat(Object.values(record).flatMap(collectButtonTexts));
+}
+
 function notification(kind: NormalizedNotification["kind"]): NormalizedNotification {
   const base: NormalizedNotification = {
     kind,
@@ -121,20 +139,51 @@ describe("Block Kit renderers", () => {
     expect(() => assertSlackMessageBounds(message)).not.toThrow();
   });
 
-  it("hides direct reject when request confirmation requires a reason", () => {
+  it("renders a send-back starter button without showing decline notes upfront", () => {
     const message = renderNotification({
       ...notification("human.input_needed"),
       interactionId: "interaction-confirm-2",
       interactionKind: "request_confirmation",
       interactionConfirmation: {
         prompt: "Should the agent apply this plan?",
+        acceptLabel: "Ship amber label proof",
+        rejectLabel: "Return violet label proof",
         rejectRequiresReason: true,
       },
     }, config);
     const json = JSON.stringify(message);
     expect(json).toContain(ACTION_IDS.interactionAccept);
-    expect(json).not.toContain(ACTION_IDS.interactionReject);
-    expect(json).toContain("Declining this confirmation requires a reason");
+    expect(json).toContain(ACTION_IDS.interactionRejectStart);
+    expect(json).toContain("Ship amber label proof");
+    expect(json).toContain("Return violet label proof");
+    expect(json).not.toContain("Use the send-back action");
+    expect(json).not.toContain(ACTION_IDS.interactionRejectReason);
+    expect(json).not.toContain("Decline notes");
+  });
+
+  it("keeps request-confirmation action payloads within Slack button value limits", () => {
+    const message = renderNotification({
+      ...notification("human.input_needed"),
+      title: "Human input needed for " + "Long title ".repeat(80),
+      identifier: "COM-" + "9".repeat(120),
+      interactionId: "interaction-confirm-long",
+      interactionKind: "request_confirmation",
+      interactionTitle: "Long confirmation title ".repeat(40),
+      interactionSummary: "Long summary ".repeat(80),
+      interactionConfirmation: {
+        prompt: "Long prompt ".repeat(140),
+        detailsMarkdown: "Long details ".repeat(120),
+        acceptLabel: "Approve with a very specific and intentionally verbose label ".repeat(3),
+        rejectLabel: "Return with a very specific and intentionally verbose label ".repeat(3),
+        rejectRequiresReason: true,
+      },
+    }, config);
+
+    const values = collectButtonValues(message);
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) {
+      expect(value.length).toBeLessThanOrEqual(2000);
+    }
   });
 
   it("renders request-checkbox-confirmation interactions as Slack checkbox controls", () => {
@@ -176,6 +225,74 @@ describe("Block Kit renderers", () => {
     expect(json).toContain(ACTION_IDS.interactionReject);
     expect(json).not.toContain(ACTION_IDS.interactionSubmit);
     expect(() => assertSlackMessageBounds(message)).not.toThrow();
+  });
+
+  it("renders a checkbox send-back starter button when decline notes are required", () => {
+    const message = renderNotification({
+      ...notification("human.input_needed"),
+      interactionId: "interaction-check-reason",
+      interactionKind: "request_checkbox_confirmation",
+      interactionTitle: "Confirm checklist",
+      interactionCheckboxConfirmation: {
+        prompt: "Which checks may the agent proceed with?",
+        acceptLabel: "Proceed with selected",
+        rejectLabel: "Return with notes",
+        rejectRequiresReason: true,
+        minSelected: 1,
+        maxSelected: 2,
+        options: [
+          { id: "docs", label: "Docs are updated" },
+          { id: "tests", label: "Tests are green" },
+        ],
+      },
+    }, config);
+    const json = JSON.stringify(message);
+    const buttonTexts = JSON.stringify(collectButtonTexts(message));
+    expect(buttonTexts).toContain("Proceed with selected");
+    expect(buttonTexts).toContain("Return with notes");
+    expect(json).toContain(ACTION_IDS.interactionRejectStart);
+    expect(json).not.toContain(ACTION_IDS.interactionReject);
+    expect(json).not.toContain("Declining this confirmation requires a reason");
+    expect(json).not.toContain("Decline notes");
+  });
+
+  it("renders large checkbox confirmations as a simple open-in-Paperclip notice", () => {
+    const options = Array.from({ length: 40 }, (_, index) => ({
+      id: `option-${index + 1}-${"long-id-segment-".repeat(4)}`,
+      label: `Long checkbox option ${index + 1}`,
+    }));
+    const message = renderNotification({
+      ...notification("human.input_needed"),
+      interactionId: "interaction-check-many",
+      interactionKind: "request_checkbox_confirmation",
+      interactionTitle: "Confirm many checkbox options",
+      interactionCheckboxConfirmation: {
+        prompt: "Which checks may the agent proceed with?",
+        acceptLabel: "Proceed with many selected",
+        rejectLabel: "Return many with notes",
+        rejectRequiresReason: true,
+        minSelected: 1,
+        maxSelected: 40,
+        defaultSelectedOptionIds: options.map((option) => option.id),
+        options,
+      },
+    }, config);
+    const json = JSON.stringify(message);
+    expect(json).toContain("PRO-1 _This confirmation has more options than Slack can show inline");
+    expect(json).toContain("Open the issue to choose them");
+    expect(json).toContain("http://127.0.0.1:3100/issues/issue-1");
+    expect(message.blocks).toHaveLength(1);
+    expect(json).not.toContain("Confirm many checkbox options");
+    expect(json).not.toContain("Which checks may the agent proceed with?");
+    expect(json).not.toContain("Select 1–40 options");
+    expect(json).not.toContain("Issue");
+    expect(json).not.toContain("Status");
+    expect(json).not.toContain(ACTION_IDS.interactionRejectStart);
+    expect(json).not.toContain(ACTION_IDS.interactionReject);
+    expect(json).not.toContain(ACTION_IDS.interactionAccept);
+    expect(json).not.toContain(ACTION_IDS.interactionCheckboxSelect);
+    expect(json).not.toContain(ACTION_IDS.issueOpen);
+    expect(collectButtonValues(message)).toHaveLength(0);
   });
 
   it("renders suggest-tasks interactions as Slack task-selection controls", () => {
@@ -223,5 +340,20 @@ describe("Block Kit renderers", () => {
     expect(json).toContain("Recommended action");
     expect(json).toContain("Package id is permanent once created");
     expect(json).toContain("GST-6");
+  });
+
+  it("collapses decided approval cards to a compact receipt", () => {
+    const json = JSON.stringify(renderNotification({
+      ...notification("approval.decided"),
+      status: "approved",
+      decisionNote: "Resolved as approved",
+    }, config));
+    expect(json).toContain("✅ Approved");
+    expect(json).toContain("Board Approval: Ratify package id");
+    expect(json).toContain("View in Paperclip");
+    expect(json).not.toContain("Open in Paperclip");
+    expect(json).not.toContain("Decision note");
+    expect(json).not.toContain("Resolved as approved");
+    expect(json).not.toContain(ACTION_IDS.approvalApprove);
   });
 });

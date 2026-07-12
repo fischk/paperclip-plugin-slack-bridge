@@ -32,7 +32,7 @@ export function contextFooter(notification: NormalizedNotification): SlackBlock 
 export function button(text: string, actionId: string, value: string, style?: "primary" | "danger") {
   return {
     type: "button",
-    text: plainText(text),
+    text: plainText(truncateText(text, 75)),
     action_id: actionId,
     value,
     ...(style ? { style } : {}),
@@ -42,7 +42,7 @@ export function button(text: string, actionId: string, value: string, style?: "p
 export function linkButton(text: string, url: string, actionId: string) {
   return {
     type: "button",
-    text: plainText(text),
+    text: plainText(truncateText(text, 75)),
     url,
     action_id: actionId,
   };
