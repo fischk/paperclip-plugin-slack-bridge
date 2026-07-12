@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-slack-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Deterministic Slack notifications and human-in-the-loop controls for Paperclip companies, over Slack Socket Mode.",
   "scripts": {

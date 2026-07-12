@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-12
+
 ### Changed
 - Human-in-the-loop confirmation Slack cards now use a two-stage send-back flow when a decline reason is required, preserving custom action labels and showing the notes input only after the send-back action is chosen.
 - Resolved approval and confirmation Slack cards now collapse to compact receipt-style messages with a Paperclip link instead of repeating full decision details in Slack.
