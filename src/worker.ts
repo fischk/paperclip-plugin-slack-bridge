@@ -167,6 +167,8 @@ async function runHumanLoopPoll(ctx: PluginContext): Promise<void> {
       scanned_issues: String(result.scannedIssues),
       dispatched: String(result.dispatched),
       failed_companies: String(result.failedCompanies),
+      pending_approvals_seen: String(result.pendingApprovalsSeen),
+      pending_approvals_recovered: String(result.pendingApprovalsRecovered),
     });
     if (!recordedPollFailure) {
       consecutivePollFailures = 0;

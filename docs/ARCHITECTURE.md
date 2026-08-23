@@ -102,7 +102,7 @@ If the decide call fails (e.g. the approval was already resolved elsewhere), the
 | `src/notification-dispatcher.ts` | Normalized event → dedupe (persistent/memory/best-effort) → destination → render → post; issue-thread tracking |
 | `src/event-normalizers.ts` | Raw `PluginEvent` → `NormalizedNotification` |
 | `src/notification-policy.ts` | Per-event-type enable flags and channel routing (default/approvals/errors/runs channels, issue threads) |
-| `src/human-loop-poller.ts` | Scheduled scan of blocked-inbox attention; enrichment via Paperclip API; synthesizes idempotent events |
+| `src/human-loop-poller.ts` | Scheduled scan of blocked-inbox attention (approvals + issue-thread interactions) plus a direct pending-approvals scan (`GET /api/companies/{id}/approvals?status=pending`) so approval candidacy does not depend solely on an issue's single attention slot; enrichment via Paperclip API; synthesizes idempotent events |
 | `src/block-kit/` | Deterministic card renderers (`approval-cards`, `issue-cards`, `run-cards`), shared primitives, Slack size limits |
 | `src/slack-api.ts` | Slack Web API wrapper: `postMessage`, `updateMessage`, `respondToInteraction`, retry/backoff |
 | `src/state.ts`, `src/constants.ts`, `src/types.ts` | Plugin-state keys, action IDs/defaults, shared types |

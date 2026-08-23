@@ -38,7 +38,7 @@ This document compares **`paperclip-plugin-slack-bridge`** (this repo, plugin id
 **What's new**
 
 - Socket Mode ingress: works against a Paperclip instance with no public URL; no signing secret or webhook exposure to manage.
-- Human-input-needed cards: a scheduled poll detects `blockedInboxAttention` reasons (`pending_board_decision`, `pending_user_decision`) so agents waiting on a human surface in Slack even without a dedicated core event.
+- Human-input-needed cards: a scheduled poll detects `blockedInboxAttention` reasons (`pending_board_decision`, `pending_user_decision`) so agents waiting on a human surface in Slack even without a dedicated core event. The same poll also reads pending approvals directly (`GET /api/companies/{id}/approvals?status=pending`), so an approval whose issue is already closed, or which shares an issue with another approval, is still recovered.
 - New Slack app config: an **app-level token** (`xapp-`, `connections:write`) is required for ingress; a ready-made Slack app manifest is bundled.
 - Issue detail cards (`/paperclip issue`), issue creation (`create`), and agent wakeup (`wakeup`). No manual thread linking; notification threading is automatic.
 - Versioned Block Kit contract with snapshot tests, making card output reviewable and stable.

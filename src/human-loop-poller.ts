@@ -24,9 +24,18 @@ export async function pollHumanLoopAttention(
   ctx: PollContext,
   credentials: RuntimeSlackCredentials,
   config: SlackNotificationsConfig,
-): Promise<{ scannedCompanies: number; scannedIssues: number; dispatched: number; failedCompanies: number; failureSource?: PollFailureSource; errorKind?: HostErrorKind }> {
+): Promise<{
+  scannedCompanies: number;
+  scannedIssues: number;
+  dispatched: number;
+  failedCompanies: number;
+  pendingApprovalsSeen: number;
+  pendingApprovalsRecovered: number;
+  failureSource?: PollFailureSource;
+  errorKind?: HostErrorKind;
+}> {
   if (config.humanLoopPollEnabled === false) {
-    return { scannedCompanies: 0, scannedIssues: 0, dispatched: 0, failedCompanies: 0 };
+    return { scannedCompanies: 0, scannedIssues: 0, dispatched: 0, failedCompanies: 0, pendingApprovalsSeen: 0, pendingApprovalsRecovered: 0 };
   }
 
   const companies = await listCompanies(ctx, config);
@@ -34,6 +43,8 @@ export async function pollHumanLoopAttention(
   let failedCompanies = 0;
   let candidates = 0;
   let dispatched = 0;
+  let pendingApprovalsSeen = 0;
+  let pendingApprovalsRecovered = 0;
   let failureSource: PollFailureSource | undefined;
   let errorKind: HostErrorKind | undefined;
   const outcomes: Record<string, number> = {};
@@ -42,7 +53,18 @@ export async function pollHumanLoopAttention(
     const companyId = stringField(company.id);
     if (!companyId) continue;
 
+    // `seenApprovalIds` and `agentsById` are shared across BOTH passes below (the
+    // issue-attention scan and the pending-approvals recovery scan), so an approval
+    // already dispatched via its issue's blockedInboxAttention slot is never
+    // re-dispatched by the recovery pass, and the agent-name lookup happens at most
+    // once per company regardless of which pass needed it first.
+    const seenApprovalIds = new Set<string>();
+    let agentsById: Map<string, string> | undefined;
+    let companyCandidates = 0;
+    const companyOutcomes: Record<string, number> = {};
+
     let issues: unknown[] = [];
+    let issuesOk = true;
     try {
       issues = await listCompanyIssues(ctx, config, companyId);
     } catch (error) {
@@ -51,56 +73,115 @@ export async function pollHumanLoopAttention(
       failureSource = failureSourceFor(error);
       ctx.logger.warn("Slack human-loop poll failed to list issues", { companyId, error_kind: errorKind, failure_source: failureSource, error: message });
       failedCompanies += 1;
-      continue;
+      issuesOk = false;
     }
 
-    scannedIssues += issues.length;
-    let companyCandidates = 0;
-    let agentsById: Map<string, string> | undefined;
-    const companyOutcomes: Record<string, number> = {};
-    for (const issue of issues) {
-      const issueRecord = issue as Record<string, unknown>;
-      const approvalId = pendingApprovalId(issueRecord);
-      const interactionId = pendingInteractionId(issueRecord);
-      let approvalDetail: Record<string, unknown> | undefined;
-      let linkedIssues: Array<Record<string, unknown>> | undefined;
-      let interactionDetail: Record<string, unknown> | undefined;
-      if (approvalId) {
-        try {
-          approvalDetail = await fetchApprovalDetail(ctx, config, approvalId);
-          const requestedByAgentId = stringField(approvalDetail?.requestedByAgentId);
-          if (requestedByAgentId && !stringField(approvalDetail?.requestedByAgentName)) {
-            agentsById ??= await listCompanyAgents(ctx, config, companyId);
-            const requestedByAgentName = agentsById.get(requestedByAgentId);
-            if (requestedByAgentName) approvalDetail = { ...approvalDetail, requestedByAgentName };
+    if (issuesOk) {
+      scannedIssues += issues.length;
+      for (const issue of issues) {
+        const issueRecord = issue as Record<string, unknown>;
+        const approvalId = pendingApprovalId(issueRecord);
+        const interactionId = pendingInteractionId(issueRecord);
+        let approvalDetail: Record<string, unknown> | undefined;
+        let linkedIssues: Array<Record<string, unknown>> | undefined;
+        let interactionDetail: Record<string, unknown> | undefined;
+        if (approvalId) {
+          try {
+            approvalDetail = await fetchApprovalDetail(ctx, config, approvalId);
+            const requestedByAgentId = stringField(approvalDetail?.requestedByAgentId);
+            if (requestedByAgentId && !stringField(approvalDetail?.requestedByAgentName)) {
+              agentsById ??= await listCompanyAgents(ctx, config, companyId);
+              const requestedByAgentName = agentsById.get(requestedByAgentId);
+              if (requestedByAgentName) approvalDetail = { ...approvalDetail, requestedByAgentName };
+            }
+            linkedIssues = await fetchApprovalLinkedIssues(ctx, config, approvalId);
+          } catch (error) {
+            const enrichKind = recordHostCallFailure(ctx, "poller", "issues.get", error);
+            ctx.logger.warn("Slack human-loop poll could not enrich approval", {
+              companyId,
+              approvalId,
+              error_kind: enrichKind,
+              failure_source: failureSourceFor(error),
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
-          linkedIssues = await fetchApprovalLinkedIssues(ctx, config, approvalId);
-        } catch (error) {
-          const enrichKind = recordHostCallFailure(ctx, "poller", "issues.get", error);
-          ctx.logger.warn("Slack human-loop poll could not enrich approval", {
-            companyId,
-            approvalId,
-            error_kind: enrichKind,
-            failure_source: failureSourceFor(error),
-            error: error instanceof Error ? error.message : String(error),
-          });
+        } else if (interactionId) {
+          try {
+            interactionDetail = await fetchIssueInteraction(ctx, config, issueRecord, interactionId);
+          } catch (error) {
+            const enrichKind = recordHostCallFailure(ctx, "poller", "issues.get", error);
+            ctx.logger.warn("Slack human-loop poll could not enrich issue-thread interaction", {
+              companyId,
+              interactionId,
+              error_kind: enrichKind,
+              failure_source: failureSourceFor(error),
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      } else if (interactionId) {
-        try {
-          interactionDetail = await fetchIssueInteraction(ctx, config, issueRecord, interactionId);
-        } catch (error) {
-          const enrichKind = recordHostCallFailure(ctx, "poller", "issues.get", error);
-          ctx.logger.warn("Slack human-loop poll could not enrich issue-thread interaction", {
-            companyId,
-            interactionId,
-            error_kind: enrichKind,
-            failure_source: failureSourceFor(error),
-            error: error instanceof Error ? error.message : String(error),
-          });
+
+        const event = humanLoopEventForIssue(company, issueRecord, approvalDetail, linkedIssues, interactionDetail);
+        if (!event) continue;
+        if (approvalId) seenApprovalIds.add(approvalId);
+        candidates += 1;
+        companyCandidates += 1;
+        const result = await dispatchPaperclipEvent(ctx, credentials.botToken, config, event, { stateMode: "best-effort-persistent" });
+        outcomes[result.reason] = (outcomes[result.reason] ?? 0) + 1;
+        companyOutcomes[result.reason] = (companyOutcomes[result.reason] ?? 0) + 1;
+        if (result.posted) dispatched += 1;
+      }
+    }
+
+    // Recovery pass: candidacy derived directly from pending approvals, not from a
+    // single-slot issue-attention field. Runs regardless of whether the issue scan
+    // above succeeded, and covers every approval the scan cannot see: one linked to
+    // a done/cancelled issue (skipped outright upstream), one whose issue's single
+    // attention slot is claimed by something else (e.g. a run-disposition handoff),
+    // and a second approval sharing an issue with one already surfaced above.
+    let pendingApprovals: unknown[] = [];
+    try {
+      pendingApprovals = await listPendingApprovals(ctx, config, companyId);
+    } catch (error) {
+      const enrichKind = recordHostCallFailure(ctx, "poller", "approvals.list", error);
+      ctx.logger.warn("Slack human-loop poll failed to list pending approvals", {
+        companyId,
+        error_kind: enrichKind,
+        failure_source: failureSourceFor(error),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      pendingApprovals = [];
+    }
+
+    for (const approval of pendingApprovals) {
+      if (!isRecord(approval)) continue;
+      const approvalId = stringField(approval.id);
+      const status = stringField(approval.status);
+      if (!approvalId || status !== "pending" || seenApprovalIds.has(approvalId)) continue;
+      seenApprovalIds.add(approvalId);
+      pendingApprovalsRecovered += 1;
+
+      let approvalDetail: Record<string, unknown> = approval;
+      let linkedIssues: Array<Record<string, unknown>> | undefined;
+      try {
+        const requestedByAgentId = stringField(approvalDetail.requestedByAgentId);
+        if (requestedByAgentId && !stringField(approvalDetail.requestedByAgentName)) {
+          agentsById ??= await listCompanyAgents(ctx, config, companyId);
+          const requestedByAgentName = agentsById.get(requestedByAgentId);
+          if (requestedByAgentName) approvalDetail = { ...approvalDetail, requestedByAgentName };
         }
+        linkedIssues = await fetchApprovalLinkedIssues(ctx, config, approvalId);
+      } catch (error) {
+        const enrichKind = recordHostCallFailure(ctx, "poller", "issues.get", error);
+        ctx.logger.warn("Slack human-loop poll could not enrich recovered approval", {
+          companyId,
+          approvalId,
+          error_kind: enrichKind,
+          failure_source: failureSourceFor(error),
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
 
-      const event = humanLoopEventForIssue(company, issueRecord, approvalDetail, linkedIssues, interactionDetail);
+      const event = approvalEventForDetail(companyId, approvalDetail, linkedIssues);
       if (!event) continue;
       candidates += 1;
       companyCandidates += 1;
@@ -109,6 +190,7 @@ export async function pollHumanLoopAttention(
       companyOutcomes[result.reason] = (companyOutcomes[result.reason] ?? 0) + 1;
       if (result.posted) dispatched += 1;
     }
+    pendingApprovalsSeen += pendingApprovals.length;
   }
 
   ctx.logger.info("Slack human-loop poll completed", {
@@ -116,9 +198,11 @@ export async function pollHumanLoopAttention(
     scannedIssues,
     candidates,
     dispatched,
+    pendingApprovalsSeen,
+    pendingApprovalsRecovered,
     outcomes,
   });
-  return { scannedCompanies: companies.length, scannedIssues, dispatched, failedCompanies, failureSource, errorKind };
+  return { scannedCompanies: companies.length, scannedIssues, dispatched, failedCompanies, pendingApprovalsSeen, pendingApprovalsRecovered, failureSource, errorKind };
 }
 
 export async function approvalCreatedEventFromApi(
@@ -211,6 +295,18 @@ async function listCompanies(ctx: PollContext, config: SlackNotificationsConfig)
 async function listCompanyIssues(ctx: PollContext, config: SlackNotificationsConfig, companyId: string): Promise<unknown[]> {
   const query = "attention=blocked&limit=100&includePluginOperations=true&includeBlockedInboxAttention=true&sortField=updated&sortDir=desc";
   const result = await fetchJson(ctx, config, `/api/companies/${encodeURIComponent(companyId)}/issues?${query}`);
+  return Array.isArray(result) ? result : [];
+}
+
+// A high limit on purpose: the issue-attention scan above already showed candidacy
+// silently truncating in the false-pass direction, and an unstated default page size
+// here would have the same effect - a pending approval past page one would simply
+// never become a candidate, with nothing to say so.
+const PENDING_APPROVALS_LIMIT = 200;
+
+async function listPendingApprovals(ctx: PollContext, config: SlackNotificationsConfig, companyId: string): Promise<unknown[]> {
+  const query = `status=pending&limit=${PENDING_APPROVALS_LIMIT}`;
+  const result = await fetchJson(ctx, config, `/api/companies/${encodeURIComponent(companyId)}/approvals?${query}`);
   return Array.isArray(result) ? result : [];
 }
 

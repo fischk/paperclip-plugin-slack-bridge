@@ -15,7 +15,10 @@ function jsonResponse(value: unknown, init: ResponseInit = {}) {
 function pollCtx() {
   return {
     state: { get: vi.fn(), set: vi.fn() },
-    http: { fetch: vi.fn() },
+    // Slack's own chat.postMessage goes through ctx.http.fetch, not the global fetch
+    // stubbed per-test for the Paperclip REST API - default it to a successful post so
+    // tests that exercise dispatch don't also have to mock the Slack leg individually.
+    http: { fetch: vi.fn(async () => jsonResponse({ ok: true, ts: "123.456" })) },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     activity: { log: vi.fn(async () => undefined) },
     metrics: { write: vi.fn(async () => undefined) },
@@ -403,19 +406,38 @@ describe("humanLoopEventForIssue", () => {
   });
 });
 
+function approvalFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "approval-1",
+    companyId: "company-1",
+    type: "request_board_approval",
+    status: "pending",
+    requestedByUserId: "local-board",
+    updatedAt: "2026-06-28T00:01:00.000Z",
+    payload: {
+      title: "Ratify package id",
+      summary: "Approve the final package id.",
+      recommendedAction: "Approve com.ephemeralstudios.gstack.",
+      risks: ["Package id is permanent."],
+    },
+    ...overrides,
+  };
+}
+
 describe("pollHumanLoopAttention", () => {
   it("does not write per-company scan activity entries", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
       if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) return jsonResponse([]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) return jsonResponse([]);
       throw new Error(`Unexpected fetch ${url}`);
     }));
     const ctx = pollCtx();
 
     const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
 
-    expect(result).toMatchObject({ scannedCompanies: 1, scannedIssues: 0, dispatched: 0, failedCompanies: 0 });
+    expect(result).toMatchObject({ scannedCompanies: 1, scannedIssues: 0, dispatched: 0, failedCompanies: 0, pendingApprovalsSeen: 0, pendingApprovalsRecovered: 0 });
     expect(ctx.activity.log).not.toHaveBeenCalled();
   });
 
@@ -426,6 +448,7 @@ describe("pollHumanLoopAttention", () => {
       if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) {
         return jsonResponse({ error: "drift" }, { status: 500, statusText: "Internal Server Error" });
       }
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) return jsonResponse([]);
       throw new Error(`Unexpected fetch ${url}`);
     }));
     const ctx = pollCtx();
@@ -445,6 +468,198 @@ describe("pollHumanLoopAttention", () => {
       surface: "poller",
       method: "issues.list",
       error_kind: "unknown",
+    }));
+  });
+
+  // Each test below gives its approval(s) a unique id/updatedAt. dispatchPaperclipEvent's
+  // dedupe falls through to an in-process memorySeenEvents Map keyed on companyId+eventId
+  // (notification-dispatcher.ts) that this suite has no reset hook for, so a reused
+  // approvalId+updatedAt pair would read as a duplicate of an earlier test's dispatch and
+  // silently fail to post here.
+  it("recovers a pending approval linked to a done issue, invisible to the issue-attention scan (STO-268 / #24, mode 1)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      // The issue-attention scan's own query filters to attention=blocked, so a `done`
+      // issue's approval never shows up here - the scan sees nothing at all.
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) return jsonResponse([]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse([approvalFixture({ id: "approval-mode1", updatedAt: "2026-08-01T00:00:00.000Z" })]);
+      }
+      if (url.endsWith("/api/approvals/approval-mode1/issues")) {
+        return jsonResponse([{ id: "issue-1", identifier: "PRO-2", title: "Approve plan" }]);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    expect(result).toMatchObject({ dispatched: 1, pendingApprovalsSeen: 1, pendingApprovalsRecovered: 1 });
+  });
+
+  it("recovers a second pending approval sharing an issue with one already surfaced by the attention scan (STO-268 / #24, mode 3)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) {
+        return jsonResponse([{
+          id: "issue-1",
+          companyId: "company-1",
+          identifier: "PRO-2",
+          title: "Approve plan",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+          // blockedInboxAttention is a single slot: it can only ever name ONE of the two
+          // approvals filed against this issue. approval-1 is visible here; approval-2 is not.
+          blockedInboxAttention: {
+            state: "awaiting_decision",
+            reason: "pending_board_decision",
+            stoppedSinceAt: "2026-06-28T00:00:00.000Z",
+            approvalId: "approval-mode3a",
+            action: { label: "Decide approval", detail: "Approve, reject, or request revision." },
+            owner: { type: "board", label: "Board" },
+          },
+        }]);
+      }
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse([
+          approvalFixture({ id: "approval-mode3a", updatedAt: "2026-08-01T00:01:00.000Z" }),
+          approvalFixture({ id: "approval-mode3b", updatedAt: "2026-08-01T00:02:00.000Z" }),
+        ]);
+      }
+      if (url.endsWith("/api/approvals/approval-mode3a")) {
+        return jsonResponse(approvalFixture({ id: "approval-mode3a", updatedAt: "2026-08-01T00:01:00.000Z" }));
+      }
+      if (url.endsWith("/api/approvals/approval-mode3a/issues") || url.endsWith("/api/approvals/approval-mode3b/issues")) {
+        return jsonResponse([{ id: "issue-1", identifier: "PRO-2", title: "Approve plan" }]);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    // Both approvals dispatched: approval-mode3a via the issue-attention slot,
+    // approval-mode3b via the pending-approvals recovery pass. Only approval-mode3b counts
+    // as "recovered" - approval-mode3a was never invisible.
+    expect(result).toMatchObject({ dispatched: 2, pendingApprovalsSeen: 2, pendingApprovalsRecovered: 1 });
+  });
+
+  it("recovers a pending approval whose issue's attention slot is claimed by an unrelated reason (STO-268 / #24, mode 2)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) {
+        return jsonResponse([{
+          id: "issue-1",
+          companyId: "company-1",
+          identifier: "PRO-2",
+          title: "Approve plan",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+          // A higher-priority attention branch (a run-disposition handoff) has claimed
+          // the issue's one attention slot, so the pending-board-decision approval never
+          // surfaces via blockedInboxAttention at all.
+          blockedInboxAttention: {
+            state: "awaiting_decision",
+            reason: "missing_disposition",
+            stoppedSinceAt: "2026-06-28T00:00:00.000Z",
+          },
+        }]);
+      }
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse([approvalFixture({ id: "approval-mode2", updatedAt: "2026-08-01T00:03:00.000Z" })]);
+      }
+      if (url.endsWith("/api/approvals/approval-mode2/issues")) {
+        return jsonResponse([{ id: "issue-1", identifier: "PRO-2", title: "Approve plan" }]);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    expect(result).toMatchObject({ dispatched: 1, pendingApprovalsSeen: 1, pendingApprovalsRecovered: 1 });
+  });
+
+  it("does not re-dispatch or double-count an approval already surfaced by the issue-attention scan", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) {
+        return jsonResponse([{
+          id: "issue-1",
+          companyId: "company-1",
+          identifier: "PRO-2",
+          title: "Approve plan",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+          blockedInboxAttention: {
+            state: "awaiting_decision",
+            reason: "pending_board_decision",
+            stoppedSinceAt: "2026-06-28T00:00:00.000Z",
+            approvalId: "approval-dedup",
+            action: { label: "Decide approval", detail: "Approve, reject, or request revision." },
+            owner: { type: "board", label: "Board" },
+          },
+        }]);
+      }
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse([approvalFixture({ id: "approval-dedup", updatedAt: "2026-08-01T00:04:00.000Z" })]);
+      }
+      if (url.endsWith("/api/approvals/approval-dedup")) {
+        return jsonResponse(approvalFixture({ id: "approval-dedup", updatedAt: "2026-08-01T00:04:00.000Z" }));
+      }
+      if (url.endsWith("/api/approvals/approval-dedup/issues")) {
+        return jsonResponse([{ id: "issue-1", identifier: "PRO-2", title: "Approve plan" }]);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    expect(result).toMatchObject({ dispatched: 1, pendingApprovalsSeen: 1, pendingApprovalsRecovered: 0 });
+  });
+
+  it("still runs the pending-approvals recovery pass when the issue-attention scan itself fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) {
+        return jsonResponse({ error: "drift" }, { status: 500, statusText: "Internal Server Error" });
+      }
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse([approvalFixture({ id: "approval-issuesfail", updatedAt: "2026-08-01T00:05:00.000Z" })]);
+      }
+      if (url.endsWith("/api/approvals/approval-issuesfail/issues")) {
+        return jsonResponse([{ id: "issue-1", identifier: "PRO-2", title: "Approve plan" }]);
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    expect(result).toMatchObject({ failedCompanies: 1, dispatched: 1, pendingApprovalsSeen: 1, pendingApprovalsRecovered: 1 });
+  });
+
+  it("logs and continues, without throwing, when the pending-approvals endpoint itself fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${baseUrl}/api/companies`) return jsonResponse([{ id: "company-1" }]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/issues?`)) return jsonResponse([]);
+      if (url.startsWith(`${baseUrl}/api/companies/company-1/approvals?`)) {
+        return jsonResponse({ error: "drift" }, { status: 500, statusText: "Internal Server Error" });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    }));
+    const ctx = pollCtx();
+
+    const result = await pollHumanLoopAttention(ctx, { botToken: "xoxb-test" }, { defaultChannelId: "C0", paperclipBaseUrl: baseUrl });
+
+    expect(result).toMatchObject({ scannedCompanies: 1, dispatched: 0, pendingApprovalsSeen: 0, pendingApprovalsRecovered: 0 });
+    expect(ctx.metrics.write).toHaveBeenCalledWith("slack_host_call_failed", 1, expect.objectContaining({
+      surface: "poller",
+      method: "approvals.list",
     }));
   });
 });

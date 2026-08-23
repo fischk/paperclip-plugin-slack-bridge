@@ -1,7 +1,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 export type HostErrorKind = "scope-denied" | "capability-denied" | "not-found" | "network" | "unknown";
-export type HostCallMethod = "companies.list" | "issues.list" | "issues.get" | "issues.create" | "issues.requestWakeup" | "state.get" | "state.set" | "activity.log" | "config.get" | "secrets.resolve";
+export type HostCallMethod = "companies.list" | "issues.list" | "issues.get" | "issues.create" | "issues.requestWakeup" | "approvals.list" | "state.get" | "state.set" | "activity.log" | "config.get" | "secrets.resolve";
 export type HostCallSurface = "slash_command" | "app_mention" | "interaction" | "event_dispatch" | "poller_dispatch" | "poller" | "job";
 
 type MetricsContext = Pick<PluginContext, "metrics" | "logger">;
