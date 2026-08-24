@@ -16,6 +16,43 @@ function event(overrides: Partial<PluginEvent>): PluginEvent {
 }
 
 describe("normalizeEvent", () => {
+  it("normalizes approval decisions so they reach Slack", () => {
+    const result = normalizeEvent(event({
+      eventId: "evt-decided-1",
+      eventType: "approval.decided",
+      entityId: "approval-9",
+      payload: {
+        approvalId: "approval-9",
+        identifier: "COM-20",
+        approvalTitle: "Board Approval: Deploy?",
+        status: "approved",
+        decisionNote: "Ship it.",
+      },
+    }));
+    expect(result).toMatchObject({
+      kind: "approval.decided",
+      eventType: "approval.decided",
+      approvalId: "approval-9",
+      title: "Board Approval: Deploy?",
+      status: "approved",
+      decisionNote: "Ship it.",
+      companyPrefix: "COM",
+      url: "http://127.0.0.1:3100/COM/approvals/approval-9",
+    });
+  });
+
+  it("keeps approvalId in step with the approval URL when the event is not entity-typed as an approval", () => {
+    for (const eventType of ["approval.created", "approval.decided"] as const) {
+      const result = normalizeEvent(event({ eventType, entityType: "issue", entityId: "approval-11", payload: {} }));
+      expect(result).toMatchObject({ approvalId: "approval-11", url: "http://127.0.0.1:3100/approvals/approval-11" });
+    }
+  });
+
+  it("falls back to a generic title for approval decisions without one", () => {
+    const result = normalizeEvent(event({ eventType: "approval.decided", entityId: "approval-10", payload: { status: "rejected" } }));
+    expect(result).toMatchObject({ kind: "approval.decided", title: "Approval decided", approvalId: "approval-10", url: "http://127.0.0.1:3100/approvals/approval-10" });
+  });
+
   it("normalizes approval requests", () => {
     const result = normalizeEvent(event({ payload: {
       approvalId: "approval-1",

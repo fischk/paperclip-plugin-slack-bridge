@@ -121,10 +121,16 @@ export async function pollHumanLoopAttention(
   return { scannedCompanies: companies.length, scannedIssues, dispatched, failedCompanies, failureSource, errorKind };
 }
 
-export async function approvalCreatedEventFromApi(
+/**
+ * Rebuilds an approval event from the approval record itself, so the card does not
+ * depend on how much the raw event payload happens to carry. `approval.decided`
+ * needs this most: the status and decision note come from the record.
+ */
+export async function approvalEventFromApi(
   ctx: ApprovalEventContext,
   config: SlackNotificationsConfig,
   event: PluginEvent,
+  eventType: "approval.created" | "approval.decided" = "approval.created",
 ): Promise<PluginEvent | null> {
   const approvalId = stringField((event.payload as Record<string, unknown> | undefined)?.approvalId) ?? event.entityId;
   const companyId = event.companyId;
@@ -138,7 +144,7 @@ export async function approvalCreatedEventFromApi(
     linkedIssues = await fetchApprovalLinkedIssues(ctx, config, approvalId);
   } catch (error) {
     const errorKind = recordHostCallFailure(ctx, "event_dispatch", "issues.get", error);
-    ctx.logger.warn("Slack approval.created enrichment could not fetch linked issues", {
+    ctx.logger.warn("Slack approval enrichment could not fetch linked issues", {
       companyId,
       approvalId,
       error_kind: errorKind,
@@ -147,7 +153,7 @@ export async function approvalCreatedEventFromApi(
     });
   }
 
-  return approvalEventForDetail(companyId, approvalDetail, linkedIssues, event.occurredAt);
+  return approvalEventForDetail(companyId, approvalDetail, linkedIssues, event.occurredAt, eventType);
 }
 
 function approvalEventForDetail(
@@ -155,6 +161,7 @@ function approvalEventForDetail(
   approvalDetail: Record<string, unknown>,
   linkedIssues?: Array<Record<string, unknown>>,
   occurredAt?: string,
+  eventType: "approval.created" | "approval.decided" = "approval.created",
 ): PluginEvent | null {
   const approvalId = stringField(approvalDetail.id);
   if (!approvalId) return null;
@@ -168,8 +175,8 @@ function approvalEventForDetail(
   const issueTitle = stringField(primaryIssue?.title);
 
   return {
-    eventId: approvalNotificationEventId(companyId, approvalId, approvalUpdatedAt),
-    eventType: "approval.created",
+    eventId: approvalNotificationEventId(companyId, approvalId, approvalUpdatedAt, eventType),
+    eventType,
     occurredAt: occurredAt ?? approvalUpdatedAt,
     actorId: "slack-notifications-approval-event",
     actorType: "plugin",
@@ -196,8 +203,14 @@ function approvalEventForDetail(
   } as unknown as PluginEvent;
 }
 
-function approvalNotificationEventId(companyId: string, approvalId: string, approvalUpdatedAt: string): string {
-  return `hitl:v2:approval:${companyId}:${approvalId}:${approvalUpdatedAt}`;
+/**
+ * `approval.created` keeps the historical shape so existing dedupe state stays
+ * valid across an upgrade; other event types are suffixed so a decision cannot
+ * be deduped away as its own creation when the record's `updatedAt` has not moved.
+ */
+function approvalNotificationEventId(companyId: string, approvalId: string, approvalUpdatedAt: string, eventType = "approval.created"): string {
+  const base = `hitl:v2:approval:${companyId}:${approvalId}:${approvalUpdatedAt}`;
+  return eventType === "approval.created" ? base : `${base}:${eventType}`;
 }
 
 async function listCompanies(ctx: PollContext, config: SlackNotificationsConfig): Promise<Array<Record<string, unknown>>> {

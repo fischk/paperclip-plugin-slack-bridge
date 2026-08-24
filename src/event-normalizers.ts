@@ -193,7 +193,14 @@ export function normalizeEvent(event: PluginEvent, paperclipBaseUrl = DEFAULT_PA
       const title = str(payload.title) ?? str(payload.issueTitle) ?? "Approval requested";
       const companyPrefix = str(payload.companyPrefix) ?? prefixFromIdentifier(str(payload.identifier) ?? str(payload.issueIdentifier));
       const path = approvalId ? approvalPath(approvalId, companyPrefix) : undefined;
-      return withUrl(base(event, "approval.created", title), paperclipBaseUrl, path);
+      return withUrl(withApprovalId(base(event, "approval.created", title), approvalId), paperclipBaseUrl, path);
+    }
+    case "approval.decided": {
+      const approvalId = str(payload.approvalId) ?? event.entityId;
+      const title = str(payload.title) ?? str(payload.approvalTitle) ?? str(payload.issueTitle) ?? "Approval decided";
+      const companyPrefix = str(payload.companyPrefix) ?? prefixFromIdentifier(str(payload.identifier) ?? str(payload.issueIdentifier));
+      const path = approvalId ? approvalPath(approvalId, companyPrefix) : undefined;
+      return withUrl(withApprovalId(base(event, "approval.decided", title), approvalId), paperclipBaseUrl, path);
     }
     case HUMAN_INPUT_EVENT_TYPE: {
       const issueId = str(payload.issueId) ?? event.entityId;
@@ -241,6 +248,16 @@ export function normalizeEvent(event: PluginEvent, paperclipBaseUrl = DEFAULT_PA
     default:
       return null;
   }
+}
+
+/**
+ * `base()` only falls back to `entityId` when `entityType` is "approval", so an
+ * approval event entitled to a different entity type would get an approval URL but
+ * no `approvalId`. State is keyed on that field, so the two have to agree.
+ */
+function withApprovalId(notification: NormalizedNotification, approvalId?: string): NormalizedNotification {
+  if (!approvalId || notification.approvalId === approvalId) return notification;
+  return { ...notification, approvalId };
 }
 
 function withUrl(notification: NormalizedNotification, baseUrl: string, path?: string): NormalizedNotification {

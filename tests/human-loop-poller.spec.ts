@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approvalCreatedEventFromApi, humanLoopEventForIssue, pollHumanLoopAttention } from "../src/human-loop-poller.js";
+import { approvalEventFromApi, humanLoopEventForIssue, pollHumanLoopAttention } from "../src/human-loop-poller.js";
 import { resetHostCallFailureSuppression } from "../src/host-errors.js";
 
 const baseUrl = "http://127.0.0.1:3100";
@@ -344,6 +344,54 @@ describe("humanLoopEventForIssue", () => {
     });
   });
 
+  it("carries the decided status and note through when enriching approval.decided", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/api/approvals/approval-2")) {
+        return new Response(JSON.stringify({
+          id: "approval-2",
+          companyId: "company-1",
+          type: "request_board_approval",
+          status: "approved",
+          decisionNote: "Ship it.",
+          updatedAt: "2026-06-28T00:05:00.000Z",
+          payload: { title: "Ratify package id" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/api/approvals/approval-2/issues")) {
+        return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const event = await approvalEventFromApi(
+      { logger: { warn: vi.fn() } } as any,
+      { defaultChannelId: "C0", paperclipBaseUrl: "http://127.0.0.1:3100" },
+      {
+        eventId: "raw-decided-event",
+        eventType: "approval.decided",
+        occurredAt: "2026-06-28T00:05:00.000Z",
+        actorId: "local-board",
+        actorType: "user",
+        entityId: "approval-2",
+        entityType: "approval",
+        companyId: "company-1",
+        // The raw event carries no status; it has to come from the approval record.
+        payload: {},
+      } as any,
+      "approval.decided",
+    );
+
+    expect(event).toMatchObject({
+      // Suffixed so a decision cannot be deduped away as its own creation.
+      eventId: "hitl:v2:approval:company-1:approval-2:2026-06-28T00:05:00.000Z:approval.decided",
+      eventType: "approval.decided",
+      entityId: "approval-2",
+      payload: { approvalId: "approval-2", status: "approved", decisionNote: "Ship it." },
+    });
+    vi.unstubAllGlobals();
+  });
+
   it("enriches native approval.created events from the approval API", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith("/api/approvals/approval-1")) {
@@ -369,7 +417,7 @@ describe("humanLoopEventForIssue", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const event = await approvalCreatedEventFromApi(
+    const event = await approvalEventFromApi(
       { logger: { warn: vi.fn() } } as any,
       { defaultChannelId: "C0", paperclipBaseUrl: "http://127.0.0.1:3100" },
       {

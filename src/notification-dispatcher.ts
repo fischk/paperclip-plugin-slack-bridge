@@ -3,10 +3,10 @@ import { DEFAULT_PAPERCLIP_BASE_URL } from "./constants.js";
 import { normalizeEvent } from "./event-normalizers.js";
 import { recordHostCallFailure, type HostCallSurface } from "./host-errors.js";
 import { renderNotification } from "./block-kit/index.js";
-import { postMessage } from "./slack-api.js";
-import { hasSeenEvent, markEventSeen, getIssueThread, setIssueThread } from "./state.js";
+import { postMessage, updateMessage } from "./slack-api.js";
+import { hasSeenEvent, markEventSeen, clearApprovalMessage, getApprovalMessage, setApprovalMessage, getIssueThread, setIssueThread } from "./state.js";
 import { isNotificationEnabled, resolveConfiguredDestination, resolveDestination } from "./notification-policy.js";
-import type { DispatchResult, NormalizedNotification, SlackNotificationsConfig, SlackThreadRef } from "./types.js";
+import type { DispatchResult, NormalizedNotification, SlackMessageRef, SlackNotificationsConfig, SlackThreadRef } from "./types.js";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 
 type DispatchStateMode = "persistent" | "memory" | "best-effort-persistent";
@@ -35,10 +35,39 @@ export async function dispatchPaperclipEvent(
   if (!notification) return { posted: false, reason: "unsupported-event" };
   if (!isNotificationEnabled(notification, config)) return { posted: false, reason: "disabled" };
 
+  // A decided approval whose record still reads "pending" means the status write was
+  // not visible to the enrichment read yet. Rendering it would relabel the card
+  // "Approval requested" and mark the event seen, freezing that wrong state
+  // permanently. Leaving the live card alone lets a later delivery, the poller, or a
+  // Slack button resolve it correctly.
+  if (notification.kind === "approval.decided" && notification.status === "pending") {
+    ctx.logger.warn("Slack approval decision read back as still pending; leaving the card alone", {
+      companyId: notification.companyId,
+      approvalId: notification.approvalId,
+    });
+    return { posted: false, reason: "approval-still-pending" };
+  }
+
   const stateMode = options.stateMode ?? "persistent";
   const eventKey = notification.eventId;
   if (await hasSeen(ctx, notification.companyId, eventKey, stateMode)) {
     return { posted: false, reason: "duplicate" };
+  }
+
+  // A decided approval should resolve the card people are already looking at rather
+  // than posting a second message. Falls through to a normal post when there is no
+  // stored card (approval predates this state key) or when the edit is rejected.
+  const updated = await updateApprovalCardInPlace(ctx, access, config, notification, stateMode);
+  if (updated) {
+    // Seen first: if this throws, worker.ts re-dispatches the raw event, whose
+    // eventId differs from the enriched one and so is not deduped. Clearing the
+    // ref before that point would let the retry post a second receipt instead of
+    // finding the card. A surviving stale ref only costs one wasted edit.
+    await markSeen(ctx, notification.companyId, eventKey, "updated", stateMode);
+    if (notification.approvalId) await forgetApprovalCard(ctx, notification.companyId, notification.approvalId, stateMode);
+    await logForwardedActivity(ctx, notification, { channelId: updated.channelId, ts: updated.ts, reason: "existing-approval-card" }, stateMode);
+    writeMetricBestEffort(ctx, "slack_notifications_sent", { event_type: notification.eventType, kind: notification.kind });
+    return { posted: true, reason: "updated", channelId: updated.channelId, ts: updated.ts };
   }
 
   const destination = await resolveDispatchDestination(ctx, notification, config, stateMode);
@@ -55,6 +84,9 @@ export async function dispatchPaperclipEvent(
   }
 
   await markSeen(ctx, notification.companyId, eventKey, "posted", stateMode);
+  if (notification.kind === "approval.created" && notification.approvalId && result.ts) {
+    await rememberApprovalCard(ctx, notification.companyId, notification.approvalId, { channelId: destination.channelId, ts: result.ts, createdAt: new Date().toISOString() }, stateMode);
+  }
   if ((stateMode === "persistent" || stateMode === "best-effort-persistent") && notification.issueId && result.ts) {
     const now = new Date().toISOString();
     const existing = await getIssueThreadBestEffort(ctx, notification.issueId, stateMode);
@@ -68,21 +100,111 @@ export async function dispatchPaperclipEvent(
     }, stateMode);
   }
 
+  await logForwardedActivity(ctx, notification, { channelId: destination.channelId, ts: result.ts, reason: destination.reason }, stateMode);
+  writeMetricBestEffort(ctx, "slack_notifications_sent", { event_type: notification.eventType, kind: notification.kind });
+
+  return { posted: true, reason: "posted", channelId: destination.channelId, ts: result.ts, threadTs: destination.threadTs };
+}
+
+/**
+ * Edits the approval card posted for `approval.created` so it shows the decision.
+ * Returns the edited message on success, or null to let the caller post normally.
+ */
+async function updateApprovalCardInPlace(
+  ctx: Pick<PluginContext, "state" | "http" | "logger" | "metrics">,
+  access: string,
+  config: SlackNotificationsConfig,
+  notification: NormalizedNotification,
+  stateMode: DispatchStateMode,
+): Promise<SlackMessageRef | null> {
+  if (notification.kind !== "approval.decided" || !notification.approvalId) return null;
+  if (stateMode === "memory") return null;
+
+  let ref: SlackMessageRef | null = null;
+  try {
+    ref = await getApprovalMessage(ctx, notification.companyId, notification.approvalId);
+  } catch (error) {
+    const errorKind = recordHostCallFailure(ctx, dispatchSurface(stateMode), "state.get", error);
+    ctx.logger.warn("Slack approval card state lookup failed; posting a new message instead", { approvalId: notification.approvalId, error_kind: errorKind, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+  if (!ref) return null;
+
+  // A network blip or a non-JSON body throws out of updateMessage rather than
+  // returning ok:false, and that must reach the fallback too, not the caller.
+  let error: string | undefined;
+  try {
+    const result = await updateMessage(ctx, access, ref.channelId, ref.ts, renderNotification(notification, config));
+    if (result.ok) return ref;
+    error = result.error ?? "unknown";
+  } catch (thrown) {
+    // Collapsed to a fixed value: thrown messages carry response text and host
+    // addresses, which would be unbounded cardinality on a metric label.
+    ctx.logger.warn("Slack approval card update threw", { approvalId: notification.approvalId, error: thrown instanceof Error ? thrown.message : String(thrown) });
+    error = "exception";
+  }
+
+  // Deleted message, archived channel, revoked scope — a fresh post still tells
+  // the channel what happened, so this is a fallback rather than a failure.
+  ctx.logger.warn("Slack approval card update failed; posting a new message instead", { approvalId: notification.approvalId, channelId: ref.channelId, error });
+  writeMetricBestEffort(ctx, "slack_approval_card_update_failed", { event_type: notification.eventType, error_code: error });
+  return null;
+}
+
+/** Best-effort like the write: a stale ref only costs one wasted edit attempt. */
+async function forgetApprovalCard(
+  ctx: Pick<PluginContext, "state" | "metrics" | "logger">,
+  companyId: string,
+  approvalId: string,
+  stateMode: DispatchStateMode,
+): Promise<void> {
+  if (stateMode === "memory") return;
+  try {
+    await clearApprovalMessage(ctx, companyId, approvalId);
+  } catch (error) {
+    const errorKind = recordHostCallFailure(ctx, dispatchSurface(stateMode), "state.set", error);
+    ctx.logger.warn("Slack approval card state cleanup failed", { approvalId, error_kind: errorKind, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
+ * Unlike the issue-thread writes, a failure here never aborts the dispatch: the
+ * card has already been posted, and a missing ref only costs the in-place edit.
+ */
+async function rememberApprovalCard(
+  ctx: Pick<PluginContext, "state" | "metrics" | "logger">,
+  companyId: string,
+  approvalId: string,
+  ref: SlackMessageRef,
+  stateMode: DispatchStateMode,
+): Promise<void> {
+  if (stateMode === "memory") return;
+  try {
+    await setApprovalMessage(ctx, companyId, approvalId, ref);
+  } catch (error) {
+    const errorKind = recordHostCallFailure(ctx, dispatchSurface(stateMode), "state.set", error);
+    ctx.logger.warn("Slack approval card state write failed; approval.decided will post a new message", { approvalId, error_kind: errorKind, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function logForwardedActivity(
+  ctx: Pick<PluginContext, "activity" | "metrics" | "logger">,
+  notification: NormalizedNotification,
+  delivery: { channelId: string; ts?: string; reason: string },
+  stateMode: DispatchStateMode,
+): Promise<void> {
   try {
     await ctx.activity.log({
       companyId: notification.companyId,
       message: `Forwarded ${notification.kind} to Slack`,
       entityType: notification.raw.entityType ?? "plugin",
       entityId: notification.entityId,
-      metadata: { slackChannelId: destination.channelId, slackTs: result.ts, destinationReason: destination.reason, stateMode },
+      metadata: { slackChannelId: delivery.channelId, slackTs: delivery.ts, destinationReason: delivery.reason, stateMode },
     });
   } catch (error) {
     const errorKind = recordHostCallFailure(ctx, dispatchSurface(stateMode), "activity.log", error);
     ctx.logger.warn("Slack notification activity log failed", { companyId: notification.companyId, error_kind: errorKind, error: error instanceof Error ? error.message : String(error) });
   }
-  writeMetricBestEffort(ctx, "slack_notifications_sent", { event_type: notification.eventType, kind: notification.kind });
-
-  return { posted: true, reason: "posted", channelId: destination.channelId, ts: result.ts, threadTs: destination.threadTs };
 }
 
 async function resolveDispatchDestination(

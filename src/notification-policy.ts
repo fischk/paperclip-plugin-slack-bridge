@@ -4,7 +4,10 @@ import { getIssueThread } from "./state.js";
 
 export function isNotificationEnabled(notification: NormalizedNotification, config: SlackNotificationsConfig): boolean {
   switch (notification.kind) {
-    case "approval.created": return config.notifyApprovalCreated ?? true;
+    case "approval.created":
+    // No dedicated schema key: a decision on an approval is part of the same
+    // conversation as the request, so it follows the creation toggle.
+    case "approval.decided": return config.notifyApprovalCreated ?? true;
     case "human.input_needed": return config.notifyHumanInputNeeded ?? true;
     case "run.failed": return config.notifyRunFailed ?? false;
     case "run.finished": return config.notifyRunFinished ?? false;

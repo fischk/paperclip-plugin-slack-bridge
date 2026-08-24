@@ -1,7 +1,7 @@
 import { definePlugin, runWorker, type PluginContext, type PluginEvent } from "@paperclipai/plugin-sdk";
 import { classifyHostError, recordHostCallFailure, type HostCallMethod, type HostErrorKind } from "./host-errors.js";
 import { dispatchPaperclipEvent } from "./notification-dispatcher.js";
-import { approvalCreatedEventFromApi, failureSourceFor, isRestFetchError, pollHumanLoopAttention, type PollFailureSource } from "./human-loop-poller.js";
+import { approvalEventFromApi, failureSourceFor, isRestFetchError, pollHumanLoopAttention, type PollFailureSource } from "./human-loop-poller.js";
 import { startSlackSocketMode, type SocketModeRuntime } from "./socket-mode.js";
 import type { RuntimeSlackCredentials, SlackNotificationsConfig } from "./types.js";
 
@@ -128,13 +128,14 @@ async function handleEvent(ctx: PluginContext, event: PluginEvent): Promise<void
   const credentials = currentCredentials ?? await loadRuntimeConfig(ctx).then(() => currentCredentials);
   if (!credentials?.botToken) throw new Error("Missing Slack bot token");
 
-  if (event.eventType === "approval.created") {
+  if (event.eventType === "approval.created" || event.eventType === "approval.decided") {
     try {
-      const enriched = await approvalCreatedEventFromApi(ctx, config, event);
+      const enriched = await approvalEventFromApi(ctx, config, event, event.eventType);
       await dispatchPaperclipEvent(ctx, credentials.botToken, config, enriched ?? event);
       return;
     } catch (error) {
-      ctx.logger.warn("Slack approval.created enrichment failed; forwarding fallback approval notification", {
+      ctx.logger.warn("Slack approval enrichment failed; forwarding fallback approval notification", {
+        eventType: event.eventType,
         approvalId: event.entityId,
         companyId: event.companyId,
         error: error instanceof Error ? error.message : String(error),

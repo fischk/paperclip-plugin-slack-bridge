@@ -28,6 +28,12 @@ describe("notification policy", () => {
     expect(isNotificationEnabled(notification, config)).toBe(true);
   });
 
+  it("gates approval decisions on the approval-created toggle", () => {
+    const decided: NormalizedNotification = { ...notification, kind: "approval.decided", eventType: "approval.decided", status: "approved" };
+    expect(isNotificationEnabled(decided, { ...config, notifyApprovalCreated: false })).toBe(false);
+    expect(isNotificationEnabled(decided, config)).toBe(true);
+  });
+
   it("prefers linked issue thread over per-type channel", async () => {
     const ctx = {
       state: {

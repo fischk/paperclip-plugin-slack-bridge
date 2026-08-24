@@ -180,3 +180,10 @@ export interface DispatchResult {
   ts?: string;
   threadTs?: string;
 }
+
+/** Pointer to a single Slack message the plugin posted, so it can later be edited in place. */
+export interface SlackMessageRef {
+  channelId: string;
+  ts: string;
+  createdAt: string;
+}

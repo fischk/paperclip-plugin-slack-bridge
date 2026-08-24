@@ -72,6 +72,8 @@ sequenceDiagram
 
 If the decide call fails (e.g. the approval was already resolved elsewhere), the worker re-fetches the current approval and replaces the card with its true state, or falls back to an ephemeral error message linking to Paperclip.
 
+When the approval is decided **outside** Slack (in the Paperclip UI, or by another integration), the same card is resolved by the `approval.decided` event rather than by an interaction. Because there is no `response_url` outside an interaction, the worker instead edits the message directly with `chat.update`, using a per-approval message ref (`STATE_KEYS.approvalThread`, company-scoped) recorded when the `approval.created` card was posted. If that ref is missing or Slack rejects the edit, the decision is posted as a new message instead, so the channel is never left with no record of it.
+
 ## Interface inventory
 
 | Interface | Protocol | Direction | Auth | Breaks if changed |
