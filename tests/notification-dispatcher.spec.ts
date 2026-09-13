@@ -1,5 +1,6 @@
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HUMAN_INPUT_EVENT_TYPE } from "../src/constants.js";
 import { resetHostCallFailureSuppression } from "../src/host-errors.js";
 import { dispatchPaperclipEvent } from "../src/notification-dispatcher.js";
 import type { SlackNotificationsConfig } from "../src/types.js";
@@ -66,6 +67,48 @@ describe("dispatchPaperclipEvent", () => {
     expect(context.state.get).not.toHaveBeenCalled();
     expect(context.state.set).not.toHaveBeenCalled();
     expect(slackApiMock.postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts an approval top-level even when its linked issue has a thread, and leaves the thread alone", async () => {
+    const anchor = { channelId: "C-thread", threadTs: "100.1", createdAt: "2026-06-01T00:00:00.000Z", updatedAt: "2026-06-01T00:00:00.000Z" };
+    const context = ctx({
+      state: {
+        get: vi.fn(async ({ scopeKind, namespace }: { scopeKind: string; namespace: string }) => (scopeKind === "issue" && namespace === "threads" ? anchor : null)),
+        set: vi.fn(async () => undefined),
+      },
+    });
+    const event = approvalEvent("approval-ledger-1");
+    event.payload = { ...(event.payload as Record<string, unknown>), issueId: "issue-ledger" };
+
+    const result = await dispatchPaperclipEvent(context, "xoxb-redacted", { ...config, approvalsChannelId: "C-approvals" }, event);
+
+    expect(result).toMatchObject({ posted: true, channelId: "C-approvals", ts: "123.456" });
+    expect(result.threadTs).toBeUndefined();
+    expect(slackApiMock.postMessage).toHaveBeenCalledWith(expect.anything(), "xoxb-redacted", "C-approvals", expect.anything(), undefined);
+    const issueThreadCalls = [...context.state.get.mock.calls, ...context.state.set.mock.calls].filter(([scope]: [{ scopeKind: string }]) => scope.scopeKind === "issue");
+    expect(issueThreadCalls).toEqual([]);
+  });
+
+  it("still records an issue thread for non-approval notifications", async () => {
+    const context = ctx({
+      state: {
+        get: vi.fn(async () => null),
+        set: vi.fn(async () => undefined),
+      },
+    });
+    const event = {
+      ...approvalEvent("issue-input-1"),
+      eventType: HUMAN_INPUT_EVENT_TYPE,
+      entityType: "issue",
+      entityId: "issue-input-1",
+      payload: { issueId: "issue-input-1", title: "Needs input" },
+    } as PluginEvent;
+
+    const result = await dispatchPaperclipEvent(context, "xoxb-redacted", config, event);
+
+    expect(result.posted).toBe(true);
+    const threadWrite = context.state.set.mock.calls.find(([scope]: [{ scopeKind: string }]) => scope.scopeKind === "issue");
+    expect(threadWrite?.[1]).toMatchObject({ channelId: "C0000000000", threadTs: "123.456", lastCardTs: "123.456" });
   });
 
   it("dedupes memory-mode events within the worker process", async () => {

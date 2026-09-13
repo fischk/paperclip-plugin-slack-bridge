@@ -5,7 +5,7 @@ import { recordHostCallFailure, type HostCallSurface } from "./host-errors.js";
 import { renderNotification } from "./block-kit/index.js";
 import { postMessage } from "./slack-api.js";
 import { hasSeenEvent, markEventSeen, getIssueThread, setIssueThread } from "./state.js";
-import { isNotificationEnabled, resolveConfiguredDestination, resolveDestination } from "./notification-policy.js";
+import { isNotificationEnabled, resolveConfiguredDestination, resolveDestination, usesIssueThread } from "./notification-policy.js";
 import type { DispatchResult, NormalizedNotification, SlackNotificationsConfig, SlackThreadRef } from "./types.js";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 
@@ -55,7 +55,7 @@ export async function dispatchPaperclipEvent(
   }
 
   await markSeen(ctx, notification.companyId, eventKey, "posted", stateMode);
-  if ((stateMode === "persistent" || stateMode === "best-effort-persistent") && notification.issueId && result.ts) {
+  if ((stateMode === "persistent" || stateMode === "best-effort-persistent") && notification.issueId && usesIssueThread(notification) && result.ts) {
     const now = new Date().toISOString();
     const existing = await getIssueThreadBestEffort(ctx, notification.issueId, stateMode);
     await setIssueThreadBestEffort(ctx, notification.issueId, {

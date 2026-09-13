@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+- Approval cards always post to the approvals channel (or the default channel) instead of replying in the linked issue's Slack thread. On a long-lived issue every approval landed as a reply under the first card ever posted for it, invisible in the channel's history. Approval cards also no longer become an issue's thread, which pulled that issue's later notifications - run failures included - into the approvals channel. Other notification kinds still thread under the issue.
+
 ## [0.1.1] - 2026-07-12
 
 ### Changed

@@ -28,13 +28,25 @@ describe("notification policy", () => {
     expect(isNotificationEnabled(notification, config)).toBe(true);
   });
 
-  it("prefers linked issue thread over per-type channel", async () => {
+  it("prefers linked issue thread over configured channels for non-approval notifications", async () => {
     const ctx = {
       state: {
         get: vi.fn(async () => ({ channelId: "C-thread", threadTs: "123.4", createdAt: "now", updatedAt: "now" })),
       },
     };
-    await expect(resolveDestination(ctx as never, notification, config)).resolves.toEqual({ channelId: "C-thread", threadTs: "123.4", reason: "linked-thread" });
+    const inputNeeded: NormalizedNotification = { ...notification, kind: "human.input_needed", eventType: "issue.updated" };
+    await expect(resolveDestination(ctx as never, inputNeeded, config)).resolves.toEqual({ channelId: "C-thread", threadTs: "123.4", reason: "linked-thread" });
+  });
+
+  it("never threads approvals under a linked issue thread", async () => {
+    const ctx = {
+      state: {
+        get: vi.fn(async () => ({ channelId: "C-thread", threadTs: "123.4", createdAt: "now", updatedAt: "now" })),
+      },
+    };
+    await expect(resolveDestination(ctx as never, notification, config)).resolves.toEqual({ channelId: "C-approvals", reason: "per-type-channel" });
+    await expect(resolveDestination(ctx as never, { ...notification, kind: "approval.decided" }, { ...config, approvalsChannelId: undefined })).resolves.toEqual({ channelId: "C-default", reason: "default-channel" });
+    expect(ctx.state.get).not.toHaveBeenCalled();
   });
 
   it("falls back to per-type then default channel", async () => {
